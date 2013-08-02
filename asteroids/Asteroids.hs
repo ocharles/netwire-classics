@@ -47,10 +47,8 @@ rotate = rotationMatrix . (+ pi) <$>
                         , 0
                         ]))
 
-  where
-
-    rotationMatrix r = V2 (V2 (cos r) (-(sin r)))
-                          (V2 (sin r) (  cos r) )
+rotationMatrix r = V2 (V2 (cos r) (-(sin r)))
+                      (V2 (sin r) (  cos r) )
 
 --------------------------------------------------------------------------------
 velocity :: Wire e m (V2 Time) (V2 Time)
@@ -76,7 +74,7 @@ wrappedPosition (V2 w h) = accumT wrap
 
 --------------------------------------------------------------------------------
 data Frame = Frame { frameShip :: !Object
-                   --, asteroid :: !Object
+                   , frameAsteroid :: !Object
                    }
 
 data Object = Object { objPos :: !(V2 Double), objRotation :: !(M22 Double) }
@@ -99,26 +97,27 @@ gameWire
   => V2 Double -> g
   -> Wire e IO (f SDL.Keysym) Frame
 gameWire bounds g = proc keysDown -> do
-  --asteroid <- asteroid bounds g -< keysDown
+  asteroid <- asteroid bounds g -< keysDown
   ship <- ship bounds -< keysDown
 
   returnA -< Frame { frameShip = ship
-                   --, asteroidPosition = asteroid
+                   , frameAsteroid = asteroid
                    }
 
 --------------------------------------------------------------------------------
-{-asteroid :: RandomGen g => V2 Double -> g -> Wire e IO a (V2 Double)-}
-{-asteroid bounds@(V2 w h) g =-}
-  {-wrappedPosition bounds start . pure (rotateVector mag r)-}
+asteroid :: RandomGen g => V2 Double -> g -> Wire e IO a Object
+asteroid bounds@(V2 w h) g = proc a -> do
+  pos <- wrappedPosition bounds pos . pure (V2 0 speed *! rotation) -< a
+  returnA -< Object pos rotation
 
- {-where-}
+ where
 
-  {-(start, mag, r) = flip evalState g $ do-}
-                      {-x <- state (randomR (0, w))-}
-                      {-y <- state (randomR (0, h))-}
-                      {-mag <- state (randomR (10, 40))-}
-                      {-r <- state (randomR (0, 2 * pi))-}
-                      {-return (V2 x y, mag, r)-}
+  (pos, speed, rotation) = flip evalState g $ do
+    pos <- V2 <$> state (randomR (0, w))
+              <*> state (randomR (0, h))
+    rotation <- rotationMatrix <$> state (randomR (0, 2 * pi))
+    speed <- state (randomR (1, 20))
+    return (pos, speed, rotation)
 
 
 --------------------------------------------------------------------------------
@@ -154,7 +153,7 @@ main = SDL.withInit [SDL.InitEverything] $ do
             SDL.fillRect screen Nothing
 
         drawObject screen (frameShip f)
-        --drawVectorAt screen (asteroidPosition f)
+        drawObject screen (frameAsteroid f)
 
         SDL.flip screen
 
