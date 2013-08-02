@@ -47,6 +47,7 @@ rotate = rotationMatrix . (+ pi) <$>
                         , 0
                         ]))
 
+rotationMatrix :: Floating a => a -> M22 a
 rotationMatrix r = V2 (V2 (cos r) (-(sin r)))
                       (V2 (sin r) (  cos r) )
 
@@ -54,11 +55,6 @@ rotationMatrix r = V2 (V2 (cos r) (-(sin r)))
 velocity :: Wire e m (V2 Time) (V2 Time)
 velocity = accumT (\dt v a -> let v' = v + a ^* dt
                               in normalize v' ^* (min 100 (norm v'))) 0
-
-
---------------------------------------------------------------------------------
-shipRadius :: Double
-shipRadius = 50
 
 
 --------------------------------------------------------------------------------
@@ -72,9 +68,11 @@ wrappedPosition (V2 w h) = accumT wrap
         (V2 x y) = p + (pure dt * v)
     in V2 (f (w + 50) (x + 50) - 50) (f (h + 50) (y + 50) - 50)
 
+
 --------------------------------------------------------------------------------
 data Frame = Frame { frameShip :: !Object
                    , frameAsteroid :: !Object
+                   , frameBullet :: [Object]
                    }
 
 data Object = Object { objPos :: !(V2 Double), objRotation :: !(M22 Double) }
@@ -91,6 +89,31 @@ ship bounds@(V2 w h) = proc keysDown -> do
 
   shipStart = V2 (w / 2 - 25) (h / 2 - 25)
 
+
+--------------------------------------------------------------------------------
+bullets :: Monad m => Wire e m (Object, Int) [Object]
+bullets = go []
+
+ where
+
+  go objs = mkGen $ \dt (ship, n) -> do
+    let new = map (const $ bullet ship) [0 .. n - 1]
+
+    wires <- mapM (\w -> stepWire w dt ()) (new ++ objs)
+    let success = [ (r, w') | (Right r, w') <- wires ]
+
+    return (Right (map fst success), go (map snd success))
+
+  bullet ship = proc _ -> do
+    let rot = objRotation ship
+    let vel = (V2 0 400) *! rot
+    pos <- withinBounds (V2 640 480) . wrappedPosition (V2 640 480) (objPos ship) -< vel
+    returnA -< Object pos rot
+
+withinBounds b@(V2 w h) = mkPure $ \_ a@(V2 x y) ->
+  if x < 0 || x > w || y < 0 || y > h
+    then (Left (), empty) else (Right a, withinBounds b)
+
 --------------------------------------------------------------------------------
 gameWire
   :: (Monoid e, Foldable f, RandomGen g)
@@ -99,10 +122,19 @@ gameWire
 gameWire bounds g = proc keysDown -> do
   asteroid <- asteroid bounds g -< keysDown
   ship <- ship bounds -< keysDown
+  bullets <- testBullets -< (keysDown, ship)
 
   returnA -< Frame { frameShip = ship
                    , frameAsteroid = asteroid
+                   , frameBullet = bullets
                    }
+
+ where
+
+  testBullets = proc (keysDown, ship) -> do
+    n <- 1 . isShooting <|> 0 -< keysDown
+    bullets -< (ship, n)
+
 
 --------------------------------------------------------------------------------
 asteroid :: RandomGen g => V2 Double -> g -> Wire e IO a Object
@@ -130,7 +162,7 @@ isShooting =
  where
 
   coolDown =
-    arr head .  multicast [ after 0.4, asSoonAs (not . keyDown' SDL.SDLK_SPACE) ]
+    arr head .  multicast [ after 0.2, asSoonAs (not . keyDown' SDL.SDLK_SPACE) ]
 
 
 --------------------------------------------------------------------------------
@@ -152,8 +184,9 @@ main = SDL.withInit [SDL.InitEverything] $ do
         (SDL.mapRGB . SDL.surfaceGetPixelFormat) screen 0 0 0 >>=
             SDL.fillRect screen Nothing
 
-        drawObject screen (frameShip f)
-        drawObject screen (frameAsteroid f)
+        drawObject screen 50 (frameShip f)
+        drawObject screen 50 (frameAsteroid f)
+        mapM_ (drawObject screen 10) (frameBullet f)
 
         SDL.flip screen
 
@@ -162,18 +195,18 @@ main = SDL.withInit [SDL.InitEverything] $ do
       Left () -> return ()
 
   parseEvents keysDown = do
-    event <- SDL.pollEvent
-    case event of
+    e <- SDL.pollEvent
+    case e of
       SDL.NoEvent -> return keysDown
       SDL.KeyDown k -> parseEvents (Set.insert k keysDown)
       SDL.KeyUp k -> parseEvents (Set.delete k keysDown)
       _ -> parseEvents keysDown
 
-  drawObject screen (Object pos@(V2 x y) rot) = do
+  drawObject screen r (Object pos@(V2 x y) rot) = do
     pixel <- (SDL.mapRGB . SDL.surfaceGetPixelFormat) screen 255 255 255
-    SDL.circle screen (round x) (round y) 50 pixel
+    SDL.circle screen (round x) (round y) (round r) pixel
 
-    let (V2 x' y') = ((V2 0 50) *! rot) + pos
+    let (V2 x' y') = ((V2 0 r) *! rot) + pos
     SDL.line screen (round x) (round y) (round x') (round y') pixel
 
 
