@@ -7,6 +7,18 @@ let
   hashable reflection semigroupoids semigroups tagged transformers
   unorderedContainers vector doctest filepath simpleReflect;
 
+  SDLgfx = cabal.mkDerivation (self: {
+  pname = "SDL-gfx";
+  version = "0.6.0";
+  sha256 = "14d8fz576rwi6x0dxgc29cdmwn48afja3v5qx3x8q5y61fv8w9v1";
+  buildDepends = [ SDL SDL_gfx ];
+  meta = {
+    description = "Binding to libSDL_gfx";
+    license = self.stdenv.lib.licenses.bsd3;
+    platforms = self.ghc.meta.platforms;
+  };
+});
+
   linear = cabal.mkDerivation (self: {
   pname = "linear";
   version = "1.1.2";
@@ -28,5 +40,5 @@ in cabal.mkDerivation (self: {
   pname = "netwire-classics";
   version = "0.1.0.0";
   src = ./.;
-  buildDepends = [ cabalInstall netwire SDL SDLMixer lens linear ];
+  buildDepends = [ cabalInstall netwire SDL SDLMixer lens linear SDLgfx ];
 })
