@@ -72,7 +72,7 @@ wrappedPosition bounds = accumT wrap
 
 --------------------------------------------------------------------------------
 data Frame = Frame { frameShip :: !Object
-                   , frameAsteroid :: !Object
+                   , frameAsteroids :: ![Object]
                    , frameBullet :: [Object]
                    }
 
@@ -92,26 +92,24 @@ ship bounds@(V2 w h) = proc keysDown -> do
 
 
 --------------------------------------------------------------------------------
-bullets :: Monad m => Wire e m (Object, Object, Int) [Object]
-bullets = go []
+--dynamicList :: Monad m => Wire e m (Object, [Object]) [Object]
+dynamicList newW l = go l
 
  where
 
-  go objs = mkGen $ \dt (ship, asteroid, n) -> do
-    let new = map (const $ bullet ship) [0 .. n - 1]
-
-    wires <- mapM (\w -> stepWire w dt asteroid) (new ++ objs)
+  go objs = mkGen $ \dt (asteroid, newArgs) -> do
+    wires <- mapM (\w -> stepWire w dt asteroid) objs
     let success = [ (r, w') | (Right r, w') <- wires ]
 
-    return (Right (map fst success), go (map snd success))
+    return (Right (map fst success), go (map snd success ++ map newW newArgs))
 
-  bullet ship = proc asteroid -> do
-    let rot = objRotation ship
-    let vel = (V2 0 300) *! rot
-    pos <- withinBounds (V2 640 480) .
-             wrappedPosition (V2 640 480) (objPos ship) -< vel
-    unless id -< bulletHit pos (objPos asteroid)
-    returnA -< Object pos rot
+bullet ship = proc asteroids -> do
+  let rot = objRotation ship
+  let vel = (V2 0 300) *! rot
+  pos <- withinBounds (V2 640 480) .
+           wrappedPosition (V2 640 480) (objPos ship) -< vel
+  unless id -< any (bulletHit pos) $ map objPos asteroids
+  returnA -< Object pos rot
 
 bulletHit bPos asteroidPos = norm (bPos - asteroidPos) < 50
 
@@ -125,36 +123,42 @@ gameWire
   => V2 Double -> g
   -> Wire e IO (f SDL.Keysym) Frame
 gameWire bounds g = proc keysDown -> do
-  asteroid <- asteroid bounds g -< keysDown
+  asteroids <- dynamicList undefined [a1, a2] -< (keysDown, [])
   ship <- ship bounds -< keysDown
-  bullets <- testBullets -< (keysDown, ship, asteroid)
+  bullets <- testBullets -< (keysDown, ship, asteroids)
 
   returnA -< Frame { frameShip = ship
-                   , frameAsteroid = asteroid
+                   , frameAsteroids = asteroids
                    , frameBullet = bullets
                    }
 
  where
 
-  testBullets = proc (keysDown, ship, asteroid) -> do
+  (a1, a2) = let (x, g') = asteroid bounds g
+                 (y, _) = asteroid bounds g'
+             in (x, y)
+
+  testBullets = proc (keysDown, ship, asteroids) -> do
     n <- 1 . isShooting <|> 0 -< keysDown
-    bullets -< (ship, asteroid, n)
+    dynamicList bullet [] -< (asteroids, replicate n ship)
 
 
 --------------------------------------------------------------------------------
-asteroid :: RandomGen g => V2 Double -> g -> Wire e IO a Object
-asteroid bounds@(V2 w h) g = proc a -> do
-  pos <- wrappedPosition bounds pos . pure (V2 0 speed *! rotation) -< a
-  returnA -< Object pos rotation
-
+asteroid :: RandomGen g => V2 Double -> g -> (Wire e IO a Object, g)
+asteroid bounds@(V2 w h) g = (wire, g')
  where
 
-  (pos, speed, rotation) = flip evalState g $ do
+  wire = proc a -> do
+    position <- wrappedPosition bounds pos . pure (V2 0 speed *! rotation) -< a
+    returnA -< Object position rotation
+
+
+  ((pos, speed, rotation), g') = flip runState g $ do
     pos <- V2 <$> state (randomR (0, w))
               <*> state (randomR (0, h))
     rotation <- rotationMatrix <$> state (randomR (0, 2 * pi))
     speed <- state (randomR (1, 20))
-    return (pos, speed, rotation)
+    return (pos :: V2 Double, speed, rotation)
 
 
 --------------------------------------------------------------------------------
@@ -190,7 +194,7 @@ main = SDL.withInit [SDL.InitEverything] $ do
             SDL.fillRect screen Nothing
 
         drawObject screen 15 (frameShip f)
-        drawObject screen 40 (frameAsteroid f)
+        mapM_ (drawObject screen 40) (frameAsteroids f)
         mapM_ (drawPixel screen) (frameBullet f)
 
         SDL.flip screen
