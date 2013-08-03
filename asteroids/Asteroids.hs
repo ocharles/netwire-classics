@@ -59,14 +59,15 @@ velocity = accumT (\dt v a -> let v' = v + a ^* dt
 
 --------------------------------------------------------------------------------
 wrappedPosition :: V2 Double -> V2 Double -> Wire e m (V2 Double) (V2 Double)
-wrappedPosition (V2 w h) = accumT wrap
+wrappedPosition bounds = accumT wrap
 
  where
 
   wrap dt p v =
-    let f b = Prelude.until (>= 0) (+ b) . Prelude.until (<= b) (\a -> a - b)
+    let (V2 w h) = bounds + 50
+        f b = Prelude.until (>= 0) (+ b) . Prelude.until (<= b) (\a -> a - b)
         (V2 x y) = p + (pure dt * v)
-    in V2 (f (w + 50) (x + 50) - 50) (f (h + 50) (y + 50) - 50)
+    in V2 (f w (x + 50) - 50) (f h (y + 50) - 50)
 
 
 --------------------------------------------------------------------------------
@@ -91,24 +92,28 @@ ship bounds@(V2 w h) = proc keysDown -> do
 
 
 --------------------------------------------------------------------------------
-bullets :: Monad m => Wire e m (Object, Int) [Object]
+bullets :: Monad m => Wire e m (Object, Object, Int) [Object]
 bullets = go []
 
  where
 
-  go objs = mkGen $ \dt (ship, n) -> do
+  go objs = mkGen $ \dt (ship, asteroid, n) -> do
     let new = map (const $ bullet ship) [0 .. n - 1]
 
-    wires <- mapM (\w -> stepWire w dt ()) (new ++ objs)
+    wires <- mapM (\w -> stepWire w dt asteroid) (new ++ objs)
     let success = [ (r, w') | (Right r, w') <- wires ]
 
     return (Right (map fst success), go (map snd success))
 
-  bullet ship = proc _ -> do
+  bullet ship = proc asteroid -> do
     let rot = objRotation ship
-    let vel = (V2 0 400) *! rot
-    pos <- withinBounds (V2 640 480) . wrappedPosition (V2 640 480) (objPos ship) -< vel
+    let vel = (V2 0 300) *! rot
+    pos <- withinBounds (V2 640 480) .
+             wrappedPosition (V2 640 480) (objPos ship) -< vel
+    unless id -< bulletHit pos (objPos asteroid)
     returnA -< Object pos rot
+
+bulletHit bPos asteroidPos = norm (bPos - asteroidPos) < 50
 
 withinBounds b@(V2 w h) = mkPure $ \_ a@(V2 x y) ->
   if x < 0 || x > w || y < 0 || y > h
@@ -122,7 +127,7 @@ gameWire
 gameWire bounds g = proc keysDown -> do
   asteroid <- asteroid bounds g -< keysDown
   ship <- ship bounds -< keysDown
-  bullets <- testBullets -< (keysDown, ship)
+  bullets <- testBullets -< (keysDown, ship, asteroid)
 
   returnA -< Frame { frameShip = ship
                    , frameAsteroid = asteroid
@@ -131,9 +136,9 @@ gameWire bounds g = proc keysDown -> do
 
  where
 
-  testBullets = proc (keysDown, ship) -> do
+  testBullets = proc (keysDown, ship, asteroid) -> do
     n <- 1 . isShooting <|> 0 -< keysDown
-    bullets -< (ship, n)
+    bullets -< (ship, asteroid, n)
 
 
 --------------------------------------------------------------------------------
@@ -162,7 +167,7 @@ isShooting =
  where
 
   coolDown =
-    arr head .  multicast [ after 0.2, asSoonAs (not . keyDown' SDL.SDLK_SPACE) ]
+    arr head .  multicast [ after 0.05, asSoonAs (not . keyDown' SDL.SDLK_SPACE) ]
 
 
 --------------------------------------------------------------------------------
@@ -184,9 +189,9 @@ main = SDL.withInit [SDL.InitEverything] $ do
         (SDL.mapRGB . SDL.surfaceGetPixelFormat) screen 0 0 0 >>=
             SDL.fillRect screen Nothing
 
-        drawObject screen 50 (frameShip f)
-        drawObject screen 50 (frameAsteroid f)
-        mapM_ (drawObject screen 10) (frameBullet f)
+        drawObject screen 15 (frameShip f)
+        drawObject screen 40 (frameAsteroid f)
+        mapM_ (drawPixel screen) (frameBullet f)
 
         SDL.flip screen
 
@@ -209,5 +214,6 @@ main = SDL.withInit [SDL.InitEverything] $ do
     let (V2 x' y') = ((V2 0 r) *! rot) + pos
     SDL.line screen (round x) (round y) (round x') (round y') pixel
 
-
-
+  drawPixel screen (Object pos@(V2 x y) rot) = do
+    pixel <- (SDL.mapRGB . SDL.surfaceGetPixelFormat) screen 255 255 255
+    SDL.pixel screen (round x) (round y) pixel
