@@ -4,19 +4,20 @@
 {-# LANGUAGE StandaloneDeriving #-}
 module Asteroids where
 
-import Prelude hiding ((.), id, until, mapM_, any, concatMap)
+import Prelude hiding ((.), id, mapM_, any, concatMap)
 import qualified Prelude
 import Control.Concurrent (threadDelay)
 import Control.Monad (liftM2, replicateM, void)
-import Control.Lens
+import Control.Lens hiding (wrapped)
 import Control.Monad.Fix (MonadFix)
-import Control.Wire
+import Control.Wire hiding (until)
 import Data.Foldable
 import Data.Monoid
 import Linear hiding ((*!))
 import qualified Data.Set as Set
 import qualified Graphics.UI.SDL as SDL
 import qualified Graphics.UI.SDL.Primitives as SDL
+import qualified Graphics.UI.SDL.TTF as SDLTTF
 
 --------------------------------------------------------------------------------
 deriving instance Ord SDL.Keysym
@@ -63,8 +64,8 @@ data Frame = Frame { fShip :: Ship
                    }
 
 --------------------------------------------------------------------------------
-render :: SDL.Surface -> Frame -> IO ()
-render screen Frame{..} = do
+render :: SDL.Surface -> SDLTTF.Font -> Frame -> IO ()
+render screen font Frame{..} = do
   void $ (SDL.mapRGB . SDL.surfaceGetPixelFormat) screen 0 0 0 >>=
     SDL.fillRect screen Nothing
 
@@ -77,6 +78,12 @@ render screen Frame{..} = do
   mapM_ renderObject fAsteroids
   mapM_ renderObject fBullets
   renderShip fShip
+
+  scoreS <-
+    SDLTTF.renderTextSolid font ("SCORE: " ++ show fScore)
+      (SDL.Color 255 255 255)
+
+  SDL.blitSurface scoreS Nothing screen Nothing
 
   SDL.flip screen
 
@@ -98,18 +105,25 @@ render screen Frame{..} = do
 main :: IO ()
 main = SDL.withInit [SDL.InitEverything] $ do
   screen <- SDL.setVideoMode 650 480 32 [SDL.SWSurface]
-  g <- getStdGen
-  go screen (Set.empty) clockSession asteroids
+
+  SDLTTF.init
+  ka1 <- SDLTTF.openFont "game_over.ttf" 20
+
+  go screen ka1 (Set.empty) clockSession asteroids
 
  where
 
-  go screen keysDown s w = do
+  go screen font keysDown s w = do
     keysDown' <- parseEvents keysDown
-    (frame, w', s') <- stepSession_ w s keysDown'
+    (r, w', s') <- stepSession w s keysDown'
 
-    render screen frame
+    case r of
+      Right frame -> do
+        render screen font frame
+        go screen font keysDown' s' w'
 
-    go screen keysDown' s' w'
+      Left done -> print done
+
 
   parseEvents keysDown = do
     e <- SDL.pollEvent
@@ -124,23 +138,35 @@ keyDown :: Foldable f => SDL.SDLKey -> f SDL.Keysym -> Bool
 keyDown k = elemOf (folded . to SDL.symKey) k
 
 --------------------------------------------------------------------------------
+data LevelOver = Cleared | Crashed
+  deriving (Show)
+
+instance Monoid LevelOver where
+  mempty = Crashed
+  mappend Crashed Crashed = Crashed
+  mappend _ _ = Cleared
+
 asteroids
-  :: (Applicative m, Monoid e, Monad m, MonadFix m, MonadRandom m)
-  => Wire e m (Set.Set SDL.Keysym) Frame
+  :: (Applicative m, Monad m, MonadFix m, MonadRandom m)
+  => Wire LevelOver m (Set.Set SDL.Keysym) Frame
 asteroids = proc keysDown -> do
   p <- player -< keysDown
   newBulletWires <- fire -< (p, keysDown)
 
   rec
-    newAsteroids <- arr (concatMap splitAsteroid) . delay [] -<
+    bulletAutos <- stepWires . delay [] -< activeBullets
+    asteroidAutos <- stepWires . initialAsteroids -< activeAsteroids
+
+    (remainingBullets, remainingAsteroids, removedAsteroids) <-
+      collide -< (bulletAutos, asteroidAutos)
+
+    newAsteroids <- arr (concatMap splitAsteroid) -<
       map fst removedAsteroids
 
-    bulletAutos <- stepWires . delay [] -< newBulletWires ++ map snd activeBullets
-    asteroidAutos <- stepWires . initialAsteroids -<
-      newAsteroids ++ map snd activeAsteroids
+    activeBullets <- returnA -< newBulletWires ++ map snd remainingBullets
+    activeAsteroids <- returnA -< newAsteroids ++ map snd remainingAsteroids
 
-    (activeBullets, activeAsteroids, removedAsteroids) <-
-      collide -< (bulletAutos, asteroidAutos)
+    unless id <!> Cleared -< length activeAsteroids == 0
 
   points <- countFrom 0 -< sumOf (folded._1.to score) removedAsteroids
 
@@ -160,7 +186,7 @@ asteroids = proc keysDown -> do
     | otherwise          = 0
 
   initialAsteroids = mkGen $ \dt a -> do
-    n <- getRandomR (3, 6)
+    n <- getRandomR (1, 1)
     wires <- replicateM n $
       asteroid 1 <$> getRandomR (30, 60)
                  <*> (V2 <$> getRandomR (0, 640) <*> getRandomR (0, 480))
@@ -201,7 +227,9 @@ player = proc keysDown -> do
   rotation <- rotationMatrix <$> (integral_ 0 . inputRotation) -< keysDown
   accel <- uncurry (!*) <$> (id *** inputAcceleration) -< (rotation, keysDown)
 
-  pos <- integrateVector (V2 (640 / 2) (380 / 2)) . integrateVector 0 -< accel
+  pos <- wrapped .
+         integrateVector (V2 (640 / 2) (380 / 2)) .
+         integrateVector 0 -< accel
 
   let s = Ship pos rotation
   returnA -< s
@@ -229,9 +257,15 @@ rotationMatrix r = V2 (V2 (cos r) (-(sin r)))
 asteroid
   :: Monad m => Int -> Double -> V2 Double -> V2 Double -> Wire e m a Asteroid
 asteroid generation size initialPosition velocity = proc _ -> do
-  pos <- integrateVector initialPosition . pure velocity -< ()
+  pos <- wrapped . integrateVector initialPosition . pure velocity -< ()
   returnA -< Asteroid pos generation size velocity
 
+--------------------------------------------------------------------------------
+wrapped :: Wire e m (V2 Double) (V2 Double)
+wrapped = mkFix $ \dt (V2 x y) ->
+  let x' = until (>= 0) (+ 640) $ until (<= 640) (subtract 640) $ x
+      y' = until (>= 0) (+ 480) $ until (<= 480) (subtract 480) $ x
+  in Right (V2 x' y')
 
 --------------------------------------------------------------------------------
 isShooting :: (Foldable f, Monad m, Monoid e) => Event e m (f SDL.Keysym)
