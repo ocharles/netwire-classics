@@ -79,7 +79,7 @@ data Frame = Frame { frameShip :: !Object
 
 data Object = Object { objPos :: !(V2 Double), objRotation :: !(M22 Double) }
 
-data AutoObject e m = AutoObject { aoObj :: Object, aoWire :: Wire e m () Object }
+data AutoObject d e m = AutoObject { aoObj :: d, aoWire :: Wire e m () d }
 
 
 --------------------------------------------------------------------------------
@@ -96,7 +96,7 @@ ship bounds@(V2 w h) = proc keysDown -> do
   shipStart = V2 (w / 2 - 25) (h / 2 - 25)
 
 
-bullet :: (Monoid e, Monad m) => Object -> AutoObject e m
+bullet :: (Monoid e, Monad m) => Object -> AutoObject Object e m
 bullet parent = let
   wire = proc _ -> do
     let rot = objRotation parent
@@ -137,7 +137,7 @@ gameWire bounds g = proc keysDown -> do
 
  where
 
-  makeAsteroids g = flip evalState g $ replicateM 30 (state $ asteroid bounds)
+  makeAsteroids g = flip evalState g $ replicateM 5 (state $ asteroid bounds)
 
   collideBullets = mkFix $ \_ (asteroids, bullets) ->
     Right ( filter (\asteroid -> not $ any (colliding (aoObj asteroid) . aoObj) bullets) asteroids
@@ -151,7 +151,7 @@ gameWire bounds g = proc keysDown -> do
 --------------------------------------------------------------------------------
 asteroid
   :: (Monad m, Monoid e, RandomGen g)
-  => V2 Double -> g -> (AutoObject e m, g)
+  => V2 Double -> g -> (AutoObject Object e m, g)
 asteroid bounds@(V2 w h) g = (AutoObject { aoObj = Object { objPos = pos, objRotation = rotation }
                                          , aoWire = wire
                                          }, g')
@@ -195,22 +195,18 @@ main = SDL.withInit [SDL.InitEverything] $ do
 
   go screen keysDown s w = do
     keysDown' <- parseEvents keysDown
-    (r, w', s') <- stepSession w s keysDown'
+    (f, w', s') <- stepSession_ w s keysDown'
 
-    case r of
-      Right f -> do
-        (SDL.mapRGB . SDL.surfaceGetPixelFormat) screen 0 0 0 >>=
-            SDL.fillRect screen Nothing
+    (SDL.mapRGB . SDL.surfaceGetPixelFormat) screen 0 0 0 >>=
+        SDL.fillRect screen Nothing
 
-        drawObject screen 15 (frameShip f)
-        mapM_ (drawObject screen 40) (frameAsteroids f)
-        mapM_ (drawPixel screen) (frameBullet f)
+    drawObject screen 15 (frameShip f)
+    mapM_ (drawObject screen 40) (frameAsteroids f)
+    mapM_ (drawPixel screen) (frameBullet f)
 
-        SDL.flip screen
+    SDL.flip screen
 
-        go screen keysDown' s' w'
-
-      Left () -> return ()
+    go screen keysDown' s' w'
 
   parseEvents keysDown = do
     e <- SDL.pollEvent
@@ -233,7 +229,7 @@ main = SDL.withInit [SDL.InitEverything] $ do
 
 
 --------------------------------------------------------------------------------
-step :: Monad m => Wire e m [AutoObject e m] [AutoObject e m]
+step :: Monad m => Wire e m [AutoObject d e m] [AutoObject d e m]
 step = mkGen $ \dt objects -> do
   stepped <- mapM (\o -> stepWire (aoWire o) dt ()) objects
   return (Right [ AutoObject o w' | (Right o, w') <- stepped ], step)
