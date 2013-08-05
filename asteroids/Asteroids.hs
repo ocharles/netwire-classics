@@ -93,28 +93,10 @@ ship bounds@(V2 w h) = proc keysDown -> do
 
  where
 
-  hitAsteroids ship asteroids = any (intersecting ship) asteroids
-
-  intersecting a (Object b _) = norm (a - b) < (40 + 15)
-
   shipStart = V2 (w / 2 - 25) (h / 2 - 25)
 
 
---------------------------------------------------------------------------------
-dynamicList
-  :: (Monoid e ,Monad m)
-  => (x -> Wire e m a b) -> [Wire e m a b] -> Wire e m (a, [x]) [b]
-dynamicList newW l = go l
-
- where
-
-  go objs = mkGen $ \dt (anAsteroid, newArgs) -> do
-    wires <- mapM (\w -> stepWire w dt anAsteroid) objs
-    let success = [ (r, w') | (Right r, w') <- wires ]
-
-    return (Right (map fst success), go (map snd success ++ map newW newArgs))
-
---bullet :: (Monoid e, Monad m) => Object -> Wire e m [Object] Object
+bullet :: (Monoid e, Monad m) => Object -> AutoObject e m
 bullet parent = let
   wire = proc _ -> do
     let rot = objRotation parent
@@ -123,9 +105,6 @@ bullet parent = let
             wrappedPosition (V2 640 480) (objPos parent) -< vel
     returnA -< Object pos rot
   in AutoObject parent wire
-
-bulletHit :: (Floating a, Num (f a), Ord a, Metric f) => f a -> f a -> Bool
-bulletHit bPos asteroidPos = norm (bPos - asteroidPos) < 50
 
 withinBounds :: (Monoid e, Monad m, Num a, Ord a) => V2 a -> Wire e m (V2 a) (V2 a)
 withinBounds b@(V2 w h) = mkPure $ \_ a@(V2 x y) ->
@@ -156,14 +135,14 @@ gameWire bounds g = proc keysDown -> do
 
  where
 
-  makeAsteroids g = flip evalState g $ replicateM 3 (state $ asteroid bounds)
+  makeAsteroids g = flip evalState g $ replicateM 30 (state $ asteroid bounds)
 
   collideBullets = mkFix $ \_ (asteroids, bullets) ->
     Right ( filter (\asteroid -> not $ any (colliding asteroid) bullets) asteroids
           , filter (\bullet -> not $ any (colliding bullet) asteroids) bullets
           )
 
-  colliding (AutoObject a _) (AutoObject b _) = norm (objPos a - objPos b) < 40
+  colliding (AutoObject a _) (AutoObject b _) = norm (objPos a - objPos b) < 4
 
 
 
@@ -179,11 +158,6 @@ asteroid bounds@(V2 w h) g = (AutoObject { aoObj = Object { objPos = pos, objRot
   wire = proc _ -> do
     position <- wrappedPosition bounds pos . pure (V2 0 speed *! rotation) -< ()
     returnA -< Object position rotation
-
-  bulletColiding (bullets, position) =
-    any (\b -> bulletHit (objPos b) position) bullets
-
-
 
   ((pos, speed, rotation), g') = flip runState g $ do
     randomPosition <-
@@ -227,7 +201,7 @@ main = SDL.withInit [SDL.InitEverything] $ do
             SDL.fillRect screen Nothing
 
         drawObject screen 15 (frameShip f)
-        mapM_ (drawObject screen 40) (frameAsteroids f)
+        mapM_ (drawObject screen 4) (frameAsteroids f)
         mapM_ (drawPixel screen) (frameBullet f)
 
         SDL.flip screen
