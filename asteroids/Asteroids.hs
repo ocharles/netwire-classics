@@ -1,210 +1,102 @@
 {-# LANGUAGE Arrows #-}
+{-# LANGUAGE NoMonomorphismRestriction #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE StandaloneDeriving #-}
-import Prelude hiding ((.), id, until)
+module Asteroids where
+
+import Prelude hiding ((.), id, until, mapM_, any, concatMap)
 import qualified Prelude
+import Control.Concurrent (threadDelay)
+import Control.Monad (void)
 import Control.Lens
-import Control.Monad (replicateM)
-import Control.Monad.Trans.State
+import Control.Monad.Fix (MonadFix)
 import Control.Wire
-import Data.Foldable (Foldable)
-import Data.Foldable (asum)
-import Data.Monoid (Monoid, mempty)
-import Linear hiding (rotate)
+import Data.Foldable
+import Data.Monoid
+import Linear
+import qualified Data.Set as Set
 import qualified Graphics.UI.SDL as SDL
 import qualified Graphics.UI.SDL.Primitives as SDL
-import qualified Data.Set as Set
 
+--------------------------------------------------------------------------------
 deriving instance Ord SDL.Keysym
 
 --------------------------------------------------------------------------------
-keyDown :: (Foldable f, Monoid e) => SDL.SDLKey -> Event e m (f SDL.Keysym)
-keyDown k = when (keyDown' k)
+class Physical p where
+  bounds :: p -> Bounds
 
+data Bounds = Circle (V2 Double) Double | Point (V2 Double)
 
---------------------------------------------------------------------------------
-keyDown' :: Foldable f => SDL.SDLKey -> f SDL.Keysym -> Bool
-keyDown' k = elemOf (folded . to SDL.symKey) k
-
-
---------------------------------------------------------------------------------
-acceleration
-  :: (Foldable f, Monad m, Monoid e)
-  => Wire e m (f SDL.Keysym, M22 Double) (V2 Double)
-acceleration = uncurry (*!) <$> (thrust *** id)
-
- where
-
-  thrust = ((V2 0 1) ^*) <$> (150 . keyDown SDL.SDLK_UP <|> 0)
-
+intersecting :: Bounds -> Bounds -> Bool
+intersecting (Circle x i) (Circle y j)  = norm (x - y) < (i + j)
+intersecting c@(Circle _ _) (Point p)   = intersecting c (Circle p 0)
+intersecting p@(Point _) c@(Circle _ _) = intersecting c p
+intersecting (Point _) (Point _)        = False
 
 --------------------------------------------------------------------------------
-rotate
-  :: (Foldable f, Monad m, Monoid e)
-  => Wire e m (f SDL.Keysym) (M22 Double)
-rotate = rotationMatrix . (+ pi) <$>
-  (integral_ 0 .  (asum [ pi . keyDown SDL.SDLK_LEFT
-                        , (negate pi) . keyDown SDL.SDLK_RIGHT
-                        , 0
-                        ]))
+data Asteroid = Asteroid { astPos :: V2 Double
+                         , astGeneration :: Int
+                         , astSize :: Double
+                         , astVelocity :: V2 Double
+                         }
 
-rotationMatrix :: Floating a => a -> M22 a
-rotationMatrix r = V2 (V2 (cos r) (-(sin r)))
-                      (V2 (sin r) (  cos r) )
+instance Physical Asteroid where
+  bounds Asteroid{..} = Circle astPos astSize
 
 --------------------------------------------------------------------------------
-velocity :: Wire e m (V2 Time) (V2 Time)
-velocity = accumT (\dt v a -> let v' = v + a ^* dt
-                              in normalize v' ^* (min 100 (norm v'))) 0
+data Bullet = Bullet { bulletPos :: V2 Double }
 
-
---------------------------------------------------------------------------------
-wrappedPosition :: V2 Double -> V2 Double -> Wire e m (V2 Double) (V2 Double)
-wrappedPosition bounds = accumT wrap
-
- where
-
-  wrap dt p v =
-    let (V2 w h) = bounds + 50
-        f b = Prelude.until (>= 0) (+ b) . Prelude.until (<= b) (\a -> a - b)
-        (V2 x y) = p + (pure dt * v)
-    in V2 (f w (x + 50) - 50) (f h (y + 50) - 50)
-
+instance Physical Bullet where
+  bounds Bullet{..} = Point bulletPos
 
 --------------------------------------------------------------------------------
-data Frame = Frame { frameShip :: !Object
-                   , frameAsteroids :: ![Object]
-                   , frameBullet :: [Object]
+data Ship = Ship { shipPos :: V2 Double, shipRotation :: M22 Double }
+
+instance Physical Ship where
+  bounds Ship{..} = Circle shipPos 20
+
+--------------------------------------------------------------------------------
+data Frame = Frame { fShip :: Ship
+                   , fAsteroids :: [Asteroid]
+                   , fBullets :: [Bullet]
                    }
 
-data Object = Object { objPos :: !(V2 Double), objRotation :: !(M22 Double) }
-
-data AutoObject d e m = AutoObject { aoObj :: d, aoWire :: Wire e m () d }
-
-
 --------------------------------------------------------------------------------
-ship
-  :: (Foldable f, Monoid e, Monad m)
-  => V2 Double -> Wire e m (f SDL.Keysym) Object
-ship bounds@(V2 w h) = proc keysDown -> do
-  rot <- rotate -< keysDown
-  position <- wrappedPosition bounds shipStart . velocity . acceleration -< (keysDown, rot)
-  returnA -< Object position rot
+render :: SDL.Surface -> Frame -> IO ()
+render screen Frame{..} = do
+  void $ (SDL.mapRGB . SDL.surfaceGetPixelFormat) screen 0 0 0 >>=
+    SDL.fillRect screen Nothing
+
+  let renderObject = void . renderBounds . bounds
+  mapM_ renderObject fAsteroids
+  mapM_ renderObject fBullets
+  renderObject fShip
+
+  SDL.flip screen
 
  where
 
-  shipStart = V2 (w / 2 - 25) (h / 2 - 25)
+  renderBounds (Circle (V2 x y) r) = do
+    pixel <- (SDL.mapRGB . SDL.surfaceGetPixelFormat) screen 255 255 255
+    SDL.circle screen (round x) (round y) (round r) pixel
 
-
-bullet :: (Monoid e, Monad m) => Object -> AutoObject Object e m
-bullet parent = let
-  wire = proc _ -> do
-    let rot = objRotation parent
-    let vel = (V2 0 300) *! rot
-    pos <- withinBounds (V2 640 480) .
-            wrappedPosition (V2 640 480) (objPos parent) -< vel
-    returnA -< Object pos rot
-  in AutoObject parent wire
-
-withinBounds :: (Monoid e, Monad m, Num a, Ord a) => V2 a -> Wire e m (V2 a) (V2 a)
-withinBounds b@(V2 w h) = mkPure $ \_ a@(V2 x y) ->
-  if x < 0 || x > w || y < 0 || y > h
-    then (Left mempty, empty) else (Right a, withinBounds b)
-
---------------------------------------------------------------------------------
-gameWire
-  :: (Foldable f, Monoid e, RandomGen g)
-  => V2 Double -> g
-  -> Wire e IO (f SDL.Keysym) Frame
-gameWire bounds g = proc keysDown -> do
-  currentShip <- ship bounds -< keysDown
-  newBullets <- arr fst . (arr (pure.bullet) *** isShooting) <|> pure [] -< (currentShip, keysDown)
-
-  rec
-
-    asteroids <- step . delay (makeAsteroids g) -< asteroids'
-    bullets <- step . delay [] -< newBullets ++ bullets'
-
-    (asteroids', bullets') <- collideBullets -< (asteroids, bullets)
-
-    when id -< not $ any (colliding currentShip) (map aoObj asteroids')
-
-
-  returnA -< Frame { frameShip = currentShip
-                   , frameAsteroids = map aoObj asteroids
-                   , frameBullet = map aoObj bullets
-                   }
-
- where
-
-  makeAsteroids g = flip evalState g $ replicateM 5 (state $ asteroid bounds)
-
-  collideBullets = mkFix $ \_ (asteroids, bullets) ->
-    Right ( filter (\asteroid -> not $ any (colliding (aoObj asteroid) . aoObj) bullets) asteroids
-          , filter (\bullet ->   not $ any (colliding (aoObj bullet) . aoObj) asteroids) bullets
-          )
-
-  colliding a b = norm (objPos a - objPos b) < 40
-
-
-
---------------------------------------------------------------------------------
-asteroid
-  :: (Monad m, Monoid e, RandomGen g)
-  => V2 Double -> g -> (AutoObject Object e m, g)
-asteroid bounds@(V2 w h) g = (AutoObject { aoObj = Object { objPos = pos, objRotation = rotation }
-                                         , aoWire = wire
-                                         }, g')
- where
-
-  wire = proc _ -> do
-    position <- wrappedPosition bounds pos . pure (V2 0 speed *! rotation) -< ()
-    returnA -< Object position rotation
-
-  ((pos, speed, rotation), g') = flip runState g $ do
-    randomPosition <-
-      V2 <$> state (randomR (0, w))
-         <*> state (randomR (0, h))
-    randomRotation <- rotationMatrix <$> state (randomR (0, 2 * pi))
-    randomSpeed <- state (randomR (10, 30))
-    return (randomPosition, randomSpeed, randomRotation)
-
-
---------------------------------------------------------------------------------
--- This shooting wire allows one shot per 1s. The user can only shoot after
--- 0.1s have elapsed, and they have released the spacebar during this cooldown.
-isShooting :: (Foldable f, Monad m, Monoid e) => Event e m (f SDL.Keysym)
-isShooting =
-  asSoonAs (keyDown' SDL.SDLK_SPACE) >>> (once --> coolDown >>> isShooting)
-
- where
-
-  coolDown =
-    arr head .  multicast [ after 0.05, asSoonAs (not . keyDown' SDL.SDLK_SPACE) ]
-
+  renderBounds (Point (V2 x y)) = do
+    pixel <- (SDL.mapRGB . SDL.surfaceGetPixelFormat) screen 255 255 255
+    SDL.pixel screen (round x) (round y) pixel
 
 --------------------------------------------------------------------------------
 main :: IO ()
 main = SDL.withInit [SDL.InitEverything] $ do
-  screen <- SDL.setVideoMode 640 480 32 [SDL.SWSurface]
-
-  g <- getStdGen
-  go screen (Set.empty) clockSession (gameWire (V2 640 480) g)
+  screen <- SDL.setVideoMode 650 480 32 [SDL.SWSurface]
+  go screen (Set.empty) clockSession asteroids
 
  where
 
   go screen keysDown s w = do
     keysDown' <- parseEvents keysDown
-    (f, w', s') <- stepSession_ w s keysDown'
+    (frame, w', s') <- stepSession_ w s keysDown'
 
-    (SDL.mapRGB . SDL.surfaceGetPixelFormat) screen 0 0 0 >>=
-        SDL.fillRect screen Nothing
-
-    drawObject screen 15 (frameShip f)
-    mapM_ (drawObject screen 40) (frameAsteroids f)
-    mapM_ (drawPixel screen) (frameBullet f)
-
-    SDL.flip screen
+    render screen frame
 
     go screen keysDown' s' w'
 
@@ -216,21 +108,113 @@ main = SDL.withInit [SDL.InitEverything] $ do
       SDL.KeyUp k -> parseEvents (Set.delete k keysDown)
       _ -> parseEvents keysDown
 
-  drawObject screen r (Object pos@(V2 x y) rot) = do
-    pixel <- (SDL.mapRGB . SDL.surfaceGetPixelFormat) screen 255 255 255
-    SDL.circle screen (round x) (round y) (round r) pixel
+--------------------------------------------------------------------------------
+keyDown :: Foldable f => SDL.SDLKey -> f SDL.Keysym -> Bool
+keyDown k = elemOf (folded . to SDL.symKey) k
 
-    let (V2 x' y') = ((V2 0 r) *! rot) + pos
-    SDL.line screen (round x) (round y) (round x') (round y') pixel
+--------------------------------------------------------------------------------
+asteroids
+  :: (Monoid e, Monad m, MonadFix m) => Wire e m (Set.Set SDL.Keysym) Frame
+asteroids = proc keysDown -> do
+  p <- player -< keysDown
+  newBulletWires <- fire -< (p, keysDown)
 
-  drawPixel screen (Object (V2 x y) _) = do
-    pixel <- (SDL.mapRGB . SDL.surfaceGetPixelFormat) screen 255 255 255
-    SDL.pixel screen (round x) (round y) pixel
+  rec
+    newAsteroids <- arr (concatMap splitAsteroid) . delay [] -<
+      map fst removedAsteroids
+
+    bulletAutos <- stepWires . delay [] -< newBulletWires ++ map snd activeBullets
+    asteroidAutos <- stepWires . delay [ asteroid 1 40 (V2 0 0) (V2 10 10) ] -<
+      newAsteroids ++ map snd activeAsteroids
+
+    (activeBullets, activeAsteroids, removedAsteroids) <-
+      collide -< (bulletAutos, asteroidAutos)
+
+  let frame = Frame { fShip = p
+                    , fAsteroids = map fst asteroidAutos
+                    , fBullets = map fst bulletAutos
+                    }
+  returnA -< frame
+
+ where
+
+  collide = mkFix $ \_ (bullets, asteroids) ->
+    let colliding others this =
+          any (intersecting (bounds (fst this))) . map (bounds.fst) $
+            others
+        activeBullets = filter (not . colliding asteroids) bullets
+        activeAsteroids = filter (not . colliding bullets) asteroids
+        destroyedAsteroids = filter (colliding bullets) asteroids
+    in Right (activeBullets, activeAsteroids, destroyedAsteroids)
+
+  fire = let tryShoot = proc (p, keysDown) -> do
+               isShooting -< keysDown
+               returnA -< [ bulletWire p ]
+         in tryShoot <|> pure []
+
+  bulletWire parent =
+      Bullet <$> integrateVector (shipPos parent) . pure bulletVelocity
+    where bulletVelocity = (V2 0 (-300)) *! shipRotation parent
+
+  splitAsteroid Asteroid{..}
+    | astGeneration < 3 =
+        let (V2 x y) = astVelocity
+            mkAsteroid = asteroid (succ astGeneration) (astSize / 2) astPos
+        in [ mkAsteroid (rotationMatrix (pi / 2) !* astVelocity)
+           , mkAsteroid (rotationMatrix ((negate pi) / 2) !* astVelocity)
+           ]
+    | otherwise         = []
+
+--------------------------------------------------------------------------------
+player :: (Monoid e, Monad m) => Wire e m (Set.Set SDL.Keysym) Ship
+player = proc keysDown -> do
+  rotation <- rotationMatrix <$> (integral_ 0 . inputRotation) -< keysDown
+  accel <- uncurry (*!) <$> (inputAcceleration *** id) -< (keysDown, rotation)
+
+  pos <- integrateVector (V2 (640 / 2) (380 / 2)) . integrateVector 0 -< accel
+
+  let s = Ship pos rotation
+  returnA -< s
+
+ where
+  inputAcceleration  =  pure (V2 0 (-150)) . when (keyDown SDL.SDLK_UP)
+                    <|> 0
+
+  inputRotation  =  pi . when (keyDown SDL.SDLK_LEFT)
+                <|> (negate pi) . when (keyDown SDL.SDLK_RIGHT)
+                <|> pure (0 :: Double)
+
+--------------------------------------------------------------------------------
+integrateVector
+  :: (Functor f, Num (f Time)) => f Double -> Wire e m (f Double) (f Double)
+integrateVector c = accumT step c where step dt a b = a + dt *^ b
 
 
 --------------------------------------------------------------------------------
-step :: Monad m => Wire e m [AutoObject d e m] [AutoObject d e m]
-step = mkGen $ \dt objects -> do
-  stepped <- mapM (\o -> stepWire (aoWire o) dt ()) objects
-  return (Right [ AutoObject o w' | (Right o, w') <- stepped ], step)
+rotationMatrix :: Floating a => a -> M22 a
+rotationMatrix r = V2 (V2 (cos r) (-(sin r)))
+                      (V2 (sin r) (  cos r) )
 
+--------------------------------------------------------------------------------
+asteroid
+  :: Monad m => Int -> Double -> V2 Double -> V2 Double -> Wire e m a Asteroid
+asteroid generation size initialPosition velocity = proc _ -> do
+  pos <- integrateVector initialPosition . pure velocity -< ()
+  returnA -< Asteroid pos generation size velocity
+
+
+--------------------------------------------------------------------------------
+isShooting :: (Foldable f, Monad m, Monoid e) => Event e m (f SDL.Keysym)
+isShooting =
+  asSoonAs (keyDown SDL.SDLK_SPACE) >>> (once --> coolDown >>> isShooting)
+
+ where
+
+  coolDown =
+    arr head .  multicast [ after 0.05, asSoonAs (not . keyDown SDL.SDLK_SPACE) ]
+
+--------------------------------------------------------------------------------
+stepWires :: Monad m => Wire e m [Wire e m () b] [(b, Wire e m () b)]
+stepWires = mkFixM $ \dt objects -> do
+  stepped <- mapM (\o -> stepWire o dt ()) objects
+  return $ Right [ (o, w') | (Right o, w') <- stepped ]
