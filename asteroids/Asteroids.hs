@@ -127,6 +127,8 @@ gameWire bounds g = proc keysDown -> do
 
     (asteroids', bullets') <- collideBullets -< (asteroids, bullets)
 
+    when id -< not $ any (colliding currentShip) (map aoObj asteroids')
+
 
   returnA -< Frame { frameShip = currentShip
                    , frameAsteroids = map aoObj asteroids
@@ -138,11 +140,11 @@ gameWire bounds g = proc keysDown -> do
   makeAsteroids g = flip evalState g $ replicateM 30 (state $ asteroid bounds)
 
   collideBullets = mkFix $ \_ (asteroids, bullets) ->
-    Right ( filter (\asteroid -> not $ any (colliding asteroid) bullets) asteroids
-          , filter (\bullet -> not $ any (colliding bullet) asteroids) bullets
+    Right ( filter (\asteroid -> not $ any (colliding (aoObj asteroid) . aoObj) bullets) asteroids
+          , filter (\bullet ->   not $ any (colliding (aoObj bullet) . aoObj) asteroids) bullets
           )
 
-  colliding (AutoObject a _) (AutoObject b _) = norm (objPos a - objPos b) < 4
+  colliding a b = norm (objPos a - objPos b) < 40
 
 
 
@@ -201,7 +203,7 @@ main = SDL.withInit [SDL.InitEverything] $ do
             SDL.fillRect screen Nothing
 
         drawObject screen 15 (frameShip f)
-        mapM_ (drawObject screen 4) (frameAsteroids f)
+        mapM_ (drawObject screen 40) (frameAsteroids f)
         mapM_ (drawPixel screen) (frameBullet f)
 
         SDL.flip screen
