@@ -4,11 +4,12 @@
 import Prelude hiding ((.), id, until)
 import qualified Prelude
 import Control.Lens
+import Control.Monad (replicateM)
 import Control.Monad.Trans.State
 import Control.Wire
-import Data.Foldable (asum)
 import Data.Foldable (Foldable)
-import Data.Monoid (Monoid)
+import Data.Foldable (asum)
+import Data.Monoid (Monoid, mempty)
 import Linear hiding (rotate)
 import qualified Graphics.UI.SDL as SDL
 import qualified Graphics.UI.SDL.Primitives as SDL
@@ -78,9 +79,13 @@ data Frame = Frame { frameShip :: !Object
 
 data Object = Object { objPos :: !(V2 Double), objRotation :: !(M22 Double) }
 
+data AutoObject e m = AutoObject { aoObj :: Object, aoWire :: Wire e m () Object }
+
 
 --------------------------------------------------------------------------------
-ship :: (Foldable f, Monoid e, Monad m) => V2 Double -> Wire e m (f SDL.Keysym) Object
+ship
+  :: (Foldable f, Monoid e, Monad m)
+  => V2 Double -> Wire e m (f SDL.Keysym) Object
 ship bounds@(V2 w h) = proc keysDown -> do
   rot <- rotate -< keysDown
   position <- wrappedPosition bounds shipStart . velocity . acceleration -< (keysDown, rot)
@@ -88,77 +93,105 @@ ship bounds@(V2 w h) = proc keysDown -> do
 
  where
 
+  hitAsteroids ship asteroids = any (intersecting ship) asteroids
+
+  intersecting a (Object b _) = norm (a - b) < (40 + 15)
+
   shipStart = V2 (w / 2 - 25) (h / 2 - 25)
 
 
 --------------------------------------------------------------------------------
---dynamicList :: Monad m => Wire e m (Object, [Object]) [Object]
+dynamicList
+  :: (Monoid e ,Monad m)
+  => (x -> Wire e m a b) -> [Wire e m a b] -> Wire e m (a, [x]) [b]
 dynamicList newW l = go l
 
  where
 
-  go objs = mkGen $ \dt (asteroid, newArgs) -> do
-    wires <- mapM (\w -> stepWire w dt asteroid) objs
+  go objs = mkGen $ \dt (anAsteroid, newArgs) -> do
+    wires <- mapM (\w -> stepWire w dt anAsteroid) objs
     let success = [ (r, w') | (Right r, w') <- wires ]
 
     return (Right (map fst success), go (map snd success ++ map newW newArgs))
 
-bullet ship = proc asteroids -> do
-  let rot = objRotation ship
-  let vel = (V2 0 300) *! rot
-  pos <- withinBounds (V2 640 480) .
-           wrappedPosition (V2 640 480) (objPos ship) -< vel
-  unless id -< any (bulletHit pos) $ map objPos asteroids
-  returnA -< Object pos rot
+--bullet :: (Monoid e, Monad m) => Object -> Wire e m [Object] Object
+bullet parent = let
+  wire = proc _ -> do
+    let rot = objRotation parent
+    let vel = (V2 0 300) *! rot
+    pos <- withinBounds (V2 640 480) .
+            wrappedPosition (V2 640 480) (objPos parent) -< vel
+    returnA -< Object pos rot
+  in AutoObject parent wire
 
+bulletHit :: (Floating a, Num (f a), Ord a, Metric f) => f a -> f a -> Bool
 bulletHit bPos asteroidPos = norm (bPos - asteroidPos) < 50
 
+withinBounds :: (Monoid e, Monad m, Num a, Ord a) => V2 a -> Wire e m (V2 a) (V2 a)
 withinBounds b@(V2 w h) = mkPure $ \_ a@(V2 x y) ->
   if x < 0 || x > w || y < 0 || y > h
-    then (Left (), empty) else (Right a, withinBounds b)
+    then (Left mempty, empty) else (Right a, withinBounds b)
 
 --------------------------------------------------------------------------------
 gameWire
-  :: (Monoid e, Foldable f, RandomGen g)
+  :: (Foldable f, Monoid e, RandomGen g)
   => V2 Double -> g
   -> Wire e IO (f SDL.Keysym) Frame
 gameWire bounds g = proc keysDown -> do
-  asteroids <- dynamicList undefined [a1, a2] -< (keysDown, [])
-  ship <- ship bounds -< keysDown
-  bullets <- testBullets -< (keysDown, ship, asteroids)
+  currentShip <- ship bounds -< keysDown
+  newBullets <- arr fst . (arr (pure.bullet) *** isShooting) <|> pure [] -< (currentShip, keysDown)
 
-  returnA -< Frame { frameShip = ship
-                   , frameAsteroids = asteroids
-                   , frameBullet = bullets
+  rec
+
+    asteroids <- step . delay (makeAsteroids g) -< asteroids'
+    bullets <- step . delay [] -< newBullets ++ bullets'
+
+    (asteroids', bullets') <- collideBullets -< (asteroids, bullets)
+
+
+  returnA -< Frame { frameShip = currentShip
+                   , frameAsteroids = map aoObj asteroids
+                   , frameBullet = map aoObj bullets
                    }
 
  where
 
-  (a1, a2) = let (x, g') = asteroid bounds g
-                 (y, _) = asteroid bounds g'
-             in (x, y)
+  makeAsteroids g = flip evalState g $ replicateM 3 (state $ asteroid bounds)
 
-  testBullets = proc (keysDown, ship, asteroids) -> do
-    n <- 1 . isShooting <|> 0 -< keysDown
-    dynamicList bullet [] -< (asteroids, replicate n ship)
+  collideBullets = mkFix $ \_ (asteroids, bullets) ->
+    Right ( filter (\asteroid -> not $ any (colliding asteroid) bullets) asteroids
+          , filter (\bullet -> not $ any (colliding bullet) asteroids) bullets
+          )
+
+  colliding (AutoObject a _) (AutoObject b _) = norm (objPos a - objPos b) < 40
+
 
 
 --------------------------------------------------------------------------------
-asteroid :: RandomGen g => V2 Double -> g -> (Wire e IO a Object, g)
-asteroid bounds@(V2 w h) g = (wire, g')
+asteroid
+  :: (Monad m, Monoid e, RandomGen g)
+  => V2 Double -> g -> (AutoObject e m, g)
+asteroid bounds@(V2 w h) g = (AutoObject { aoObj = Object { objPos = pos, objRotation = rotation }
+                                         , aoWire = wire
+                                         }, g')
  where
 
-  wire = proc a -> do
-    position <- wrappedPosition bounds pos . pure (V2 0 speed *! rotation) -< a
+  wire = proc _ -> do
+    position <- wrappedPosition bounds pos . pure (V2 0 speed *! rotation) -< ()
     returnA -< Object position rotation
+
+  bulletColiding (bullets, position) =
+    any (\b -> bulletHit (objPos b) position) bullets
+
 
 
   ((pos, speed, rotation), g') = flip runState g $ do
-    pos <- V2 <$> state (randomR (0, w))
-              <*> state (randomR (0, h))
-    rotation <- rotationMatrix <$> state (randomR (0, 2 * pi))
-    speed <- state (randomR (1, 20))
-    return (pos :: V2 Double, speed, rotation)
+    randomPosition <-
+      V2 <$> state (randomR (0, w))
+         <*> state (randomR (0, h))
+    randomRotation <- rotationMatrix <$> state (randomR (0, 2 * pi))
+    randomSpeed <- state (randomR (10, 30))
+    return (randomPosition, randomSpeed, randomRotation)
 
 
 --------------------------------------------------------------------------------
@@ -218,6 +251,14 @@ main = SDL.withInit [SDL.InitEverything] $ do
     let (V2 x' y') = ((V2 0 r) *! rot) + pos
     SDL.line screen (round x) (round y) (round x') (round y') pixel
 
-  drawPixel screen (Object pos@(V2 x y) rot) = do
+  drawPixel screen (Object (V2 x y) _) = do
     pixel <- (SDL.mapRGB . SDL.surfaceGetPixelFormat) screen 255 255 255
     SDL.pixel screen (round x) (round y) pixel
+
+
+--------------------------------------------------------------------------------
+step :: Monad m => Wire e m [AutoObject e m] [AutoObject e m]
+step = mkGen $ \dt objects -> do
+  stepped <- mapM (\o -> stepWire (aoWire o) dt ()) objects
+  return (Right [ AutoObject o w' | (Right o, w') <- stepped ], step)
+
