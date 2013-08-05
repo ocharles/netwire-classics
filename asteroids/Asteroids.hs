@@ -59,6 +59,7 @@ instance Physical Ship where
 data Frame = Frame { fShip :: Ship
                    , fAsteroids :: [Asteroid]
                    , fBullets :: [Bullet]
+                   , fScore :: Int
                    }
 
 --------------------------------------------------------------------------------
@@ -141,13 +142,22 @@ asteroids = proc keysDown -> do
     (activeBullets, activeAsteroids, removedAsteroids) <-
       collide -< (bulletAutos, asteroidAutos)
 
+  points <- countFrom 0 -< sumOf (folded._1.to score) removedAsteroids
+
   let frame = Frame { fShip = p
                     , fAsteroids = map fst asteroidAutos
                     , fBullets = map fst bulletAutos
+                    , fScore = points
                     }
   returnA -< frame
 
  where
+
+  score Asteroid{..}
+    | astGeneration == 1 = 10
+    | astGeneration == 2 = 50
+    | astGeneration == 3 = 100
+    | otherwise          = 0
 
   initialAsteroids = mkGen $ \dt a -> do
     n <- getRandomR (3, 6)
