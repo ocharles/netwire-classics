@@ -11,9 +11,23 @@ let
   pname = "SDL-gfx";
   version = "0.6.0";
   sha256 = "14d8fz576rwi6x0dxgc29cdmwn48afja3v5qx3x8q5y61fv8w9v1";
-  buildDepends = [ SDL SDL_gfx ];
+  buildDepends = [ SDL ];
+  extraLibraries = [ SDL_gfx ];
   meta = {
     description = "Binding to libSDL_gfx";
+    license = self.stdenv.lib.licenses.bsd3;
+    platforms = self.ghc.meta.platforms;
+  };
+});
+
+  SDLttf = cabal.mkDerivation (self: {
+  pname = "SDL-ttf";
+  version = "0.6.2";
+  sha256 = "0jajnbqnhdd4i8pj8j27m53zwgfs1v06kiwy0s0zml02fdkq8j4a";
+  buildDepends = [ SDL ];
+  extraLibraries = [ SDL_ttf ];
+  meta = {
+    description = "Binding to libSDL_ttf";
     license = self.stdenv.lib.licenses.bsd3;
     platforms = self.ghc.meta.platforms;
   };
@@ -40,5 +54,5 @@ in cabal.mkDerivation (self: {
   pname = "netwire-classics";
   version = "0.1.0.0";
   src = ./.;
-  buildDepends = [ cabalInstall netwire SDL SDLMixer lens linear SDLgfx ];
+  buildDepends = [ cabalInstall netwire SDL SDLMixer lens linear SDLgfx SDLttf ];
 })

@@ -7,13 +7,13 @@ module Asteroids where
 import Prelude hiding ((.), id, until, mapM_, any, concatMap)
 import qualified Prelude
 import Control.Concurrent (threadDelay)
-import Control.Monad (void)
+import Control.Monad (liftM2, replicateM, void)
 import Control.Lens
 import Control.Monad.Fix (MonadFix)
 import Control.Wire
 import Data.Foldable
 import Data.Monoid
-import Linear
+import Linear hiding ((*!))
 import qualified Data.Set as Set
 import qualified Graphics.UI.SDL as SDL
 import qualified Graphics.UI.SDL.Primitives as SDL
@@ -68,9 +68,14 @@ render screen Frame{..} = do
     SDL.fillRect screen Nothing
 
   let renderObject = void . renderBounds . bounds
+      renderShip s@Ship{..} = do
+        renderObject s
+        renderLine shipPos
+          (shipPos + normalize (shipRotation !* (V2 0 (-1))) ^* 20)
+
   mapM_ renderObject fAsteroids
   mapM_ renderObject fBullets
-  renderObject fShip
+  renderShip fShip
 
   SDL.flip screen
 
@@ -84,10 +89,15 @@ render screen Frame{..} = do
     pixel <- (SDL.mapRGB . SDL.surfaceGetPixelFormat) screen 255 255 255
     SDL.pixel screen (round x) (round y) pixel
 
+  renderLine (V2 x y) (V2 x' y') = do
+    pixel <- (SDL.mapRGB . SDL.surfaceGetPixelFormat) screen 255 255 255
+    SDL.line screen (round x) (round y) (round x') (round y') pixel
+
 --------------------------------------------------------------------------------
 main :: IO ()
 main = SDL.withInit [SDL.InitEverything] $ do
   screen <- SDL.setVideoMode 650 480 32 [SDL.SWSurface]
+  g <- getStdGen
   go screen (Set.empty) clockSession asteroids
 
  where
@@ -114,7 +124,8 @@ keyDown k = elemOf (folded . to SDL.symKey) k
 
 --------------------------------------------------------------------------------
 asteroids
-  :: (Monoid e, Monad m, MonadFix m) => Wire e m (Set.Set SDL.Keysym) Frame
+  :: (Applicative m, Monoid e, Monad m, MonadFix m, MonadRandom m)
+  => Wire e m (Set.Set SDL.Keysym) Frame
 asteroids = proc keysDown -> do
   p <- player -< keysDown
   newBulletWires <- fire -< (p, keysDown)
@@ -124,7 +135,7 @@ asteroids = proc keysDown -> do
       map fst removedAsteroids
 
     bulletAutos <- stepWires . delay [] -< newBulletWires ++ map snd activeBullets
-    asteroidAutos <- stepWires . delay [ asteroid 1 40 (V2 0 0) (V2 10 10) ] -<
+    asteroidAutos <- stepWires . initialAsteroids -<
       newAsteroids ++ map snd activeAsteroids
 
     (activeBullets, activeAsteroids, removedAsteroids) <-
@@ -137,6 +148,14 @@ asteroids = proc keysDown -> do
   returnA -< frame
 
  where
+
+  initialAsteroids = mkGen $ \dt a -> do
+    n <- getRandomR (3, 6)
+    wires <- replicateM n $
+      asteroid 1 <$> getRandomR (30, 60)
+                 <*> (V2 <$> getRandomR (0, 640) <*> getRandomR (0, 480))
+                 <*> (V2 <$> getRandomR (-20, 20) <*> getRandomR (-20, 20))
+    stepWire (delay wires) dt a
 
   collide = mkFix $ \_ (bullets, asteroids) ->
     let colliding others this =
@@ -154,12 +173,13 @@ asteroids = proc keysDown -> do
 
   bulletWire parent =
       Bullet <$> integrateVector (shipPos parent) . pure bulletVelocity
-    where bulletVelocity = (V2 0 (-300)) *! shipRotation parent
+    where bulletVelocity = shipRotation parent !* (V2 0 (-300))
 
   splitAsteroid Asteroid{..}
     | astGeneration < 3 =
         let (V2 x y) = astVelocity
-            mkAsteroid = asteroid (succ astGeneration) (astSize / 2) astPos
+            mkAsteroid vel =
+              asteroid (succ astGeneration) (astSize / 2) astPos (vel ^* 3)
         in [ mkAsteroid (rotationMatrix (pi / 2) !* astVelocity)
            , mkAsteroid (rotationMatrix ((negate pi) / 2) !* astVelocity)
            ]
@@ -169,7 +189,7 @@ asteroids = proc keysDown -> do
 player :: (Monoid e, Monad m) => Wire e m (Set.Set SDL.Keysym) Ship
 player = proc keysDown -> do
   rotation <- rotationMatrix <$> (integral_ 0 . inputRotation) -< keysDown
-  accel <- uncurry (*!) <$> (inputAcceleration *** id) -< (keysDown, rotation)
+  accel <- uncurry (!*) <$> (id *** inputAcceleration) -< (rotation, keysDown)
 
   pos <- integrateVector (V2 (640 / 2) (380 / 2)) . integrateVector 0 -< accel
 
@@ -180,8 +200,8 @@ player = proc keysDown -> do
   inputAcceleration  =  pure (V2 0 (-150)) . when (keyDown SDL.SDLK_UP)
                     <|> 0
 
-  inputRotation  =  pi . when (keyDown SDL.SDLK_LEFT)
-                <|> (negate pi) . when (keyDown SDL.SDLK_RIGHT)
+  inputRotation  =  (negate pi) . when (keyDown SDL.SDLK_LEFT)
+                <|> pi . when (keyDown SDL.SDLK_RIGHT)
                 <|> pure (0 :: Double)
 
 --------------------------------------------------------------------------------
@@ -218,3 +238,7 @@ stepWires :: Monad m => Wire e m [Wire e m () b] [(b, Wire e m () b)]
 stepWires = mkFixM $ \dt objects -> do
   stepped <- mapM (\o -> stepWire o dt ()) objects
   return $ Right [ (o, w') | (Right o, w') <- stepped ]
+
+--------------------------------------------------------------------------------
+randomVector :: (Monad m, MonadRandom m) => m (V2 Double)
+randomVector = liftM2 V2 (getRandomR (-1, 1)) (getRandomR (-1, 1))
