@@ -63,7 +63,7 @@ instance Physical Ship where
   bounds Ship{..} = Circle shipPos shipRadius
 
 --------------------------------------------------------------------------------
-data Frame = Frame { fShip :: Ship
+data Frame = Frame { fShip :: Either [V2 Double] Ship
                    , fAsteroids :: [Asteroid]
                    , fBullets :: [Bullet]
                    , fScore :: Int
@@ -77,10 +77,12 @@ render screen font Frame{..} = do
     SDL.fillRect screen Nothing
 
   let renderObject = void . renderBounds . bounds
-      renderShip s@Ship{..} = do
+      renderShip (Left particles) = mapM_ renderPoint particles
+      renderShip (Right s@Ship{..}) = do
         renderObject s
         renderLine shipPos
           (shipPos + normalize (shipRotation !* (V2 0 (-1))) ^* shipRadius)
+        return ()
 
   mapM_ renderObject fAsteroids
   mapM_ renderObject fBullets
@@ -119,9 +121,13 @@ main = SDL.withInit [SDL.InitEverything] $ do
   SDLTTF.init
   ka1 <- SDLTTF.openFont "game_over.ttf" 20
 
-  go screen ka1 (Set.empty) clockSession asteroids
+  go screen ka1 (Set.empty) clockSession playForever
 
  where
+
+  playForever = switchBy progression asteroids
+   where progression Cleared = asteroids
+         progression Crashed = asteroids
 
   go screen font keysDown s w = do
     keysDown' <- parseEvents keysDown
@@ -132,7 +138,7 @@ main = SDL.withInit [SDL.InitEverything] $ do
         render screen font frame
         go screen font keysDown' s' w'
 
-      Left done -> print done
+      Left _ -> return ()
 
 
   parseEvents keysDown = do
@@ -142,6 +148,7 @@ main = SDL.withInit [SDL.InitEverything] $ do
       SDL.KeyDown k -> parseEvents (Set.insert k keysDown)
       SDL.KeyUp k -> parseEvents (Set.delete k keysDown)
       _ -> parseEvents keysDown
+
 
 --------------------------------------------------------------------------------
 keyDown :: Foldable f => SDL.SDLKey -> f SDL.Keysym -> Bool
@@ -169,17 +176,17 @@ asteroids = proc keysDown -> do
 
     newAsteroids <- splitAsteroids -< map fst removedAsteroids
 
-    p <- player -< (keysDown, map fst remainingAsteroids)
-    newBulletWires <- fire -< (p, keysDown)
+    (p, newBulletWires) <- player -< (keysDown, map fst remainingAsteroids)
 
     activeBullets <- returnA -< newBulletWires ++ map snd remainingBullets
     activeAsteroids <- returnA -< newAsteroids ++ map snd remainingAsteroids
 
-    unless id <!> Cleared -< length activeAsteroids == 0
+    unless (== 0) <!> Cleared -< length activeAsteroids
+
+  let asteroidExplosions = removedAsteroids ^.. folded . _1 . to astPos
+  particles <- particleSystems -< asteroidExplosions
 
   points <- countFrom 0 -< sumOf (folded._1.to score) removedAsteroids
-
-  particles <- particleSystems -< removedAsteroids ^.. folded . _1 . to astPos
 
   returnA -< Frame { fShip = p
                    , fAsteroids = map fst asteroidAutos
@@ -196,11 +203,6 @@ asteroids = proc keysDown -> do
     | astGeneration == 3 = 100
     | otherwise          = 0
 
-  randomVelocity magRange = do
-    v <- V2 <$> getRandomR (-1, 1) <*> getRandomR (-1, 1)
-    mag <- getRandomR magRange
-    return (normalize v ^* mag)
-
   initialAsteroids = mkGen $ \dt a -> do
     wires <- replicateM 4 $
       asteroid 1 <$> getRandomR (20, 40)
@@ -214,18 +216,6 @@ asteroids = proc keysDown -> do
         destroyedAsteroids = filter (colliding (map fst bullets) . fst) asteroids
     in Right (activeBullets, activeAsteroids, destroyedAsteroids)
 
-  fire = let tryShoot = proc (p, keysDown) -> do
-               isShooting -< keysDown
-               returnA -< [ bulletWire p ]
-         in tryShoot <|> pure []
-
-  bulletWire parent = for 2 . aBullet
-    where
-      aBullet = Bullet <$> wrapped .
-                           integrateVector (shipPos parent) .
-                           pure bulletVelocity
-      bulletVelocity = shipRotation parent !* (V2 0 (-300))
-
   splitAsteroids = mkFixM $ \_ asteroids ->
     (Right . concat) <$> mapM splitAsteroid asteroids
 
@@ -238,39 +228,64 @@ asteroids = proc keysDown -> do
         replicateM 2 (mkAsteroid <$> randomVelocity mag)
     | otherwise         = return []
 
-  particleSystems = go []
-    where
-      go systems = mkGen $ \dt newSystemLocations -> do
-        stepped <- mapM (\w -> stepWire w dt ()) systems
+--------------------------------------------------------------------------------
+randomVelocity magRange = do
+  v <- V2 <$> getRandomR (-1, 1) <*> getRandomR (-1, 1)
+  mag <- getRandomR magRange
+  return (normalize v ^* mag)
 
-        let alive = [ (r, w) | (Right r, w) <- stepped ]
-        spawned <- concat <$> mapM spawnParticles newSystemLocations
+--------------------------------------------------------------------------------
+particleSystems = go []
+ where
+  go systems = mkGen $ \dt newSystemLocations -> do
+    stepped <- mapM (\w -> stepWire w dt ()) systems
 
-        return (Right (map fst alive), go $ map snd alive ++ spawned)
+    let alive = [ (r, w) | (Right r, w) <- stepped ]
+    spawned <- concat <$> mapM spawnParticles newSystemLocations
 
-      spawnParticles at = do
-        n <- getRandomR (4, 8)
-        replicateM n $ do
-          vector <- randomVelocity (5, 10)
-          life <- getRandomR (1, 3)
-          return ((for life <!> ()). integrateVector at . pure vector)
+    return (Right (map fst alive), go $ map snd alive ++ spawned)
+
+  spawnParticles at = do
+    n <- getRandomR (4, 8)
+    replicateM n $ do
+      vector <- randomVelocity (5, 10)
+      life <- getRandomR (1, 3)
+      return ((for life <!> ()). integrateVector at . pure vector)
 
 
 --------------------------------------------------------------------------------
-player :: (Monoid e, Monad m) => Wire e m (Set.Set SDL.Keysym, [Asteroid]) Ship
+player
+  :: (Monoid e, Monad m, MonadRandom m, Applicative m)
+  => Wire LevelOver m
+       (Set.Set SDL.Keysym, [Asteroid])
+       (Either [V2 Double] Ship, [Wire e m () Bullet])
 player = proc (keysDown, asteroids) -> do
-  rotation <- rotationMatrix <$> (integral_ 0 . inputRotation) -< keysDown
-  accel <- uncurry (!*) <$> (id *** inputAcceleration) -< (rotation, keysDown)
-
-  pos <- wrapped .
-         integrateVector (V2 (640 / 2) (380 / 2)) .
-         integrateVector 0 -< accel
-
-  arr fst . when notColliding -< (Ship pos rotation, asteroids)
+  ship <- fly -< keysDown
+  arr snd . (notColliding *** aliveShip) --> arr fst . first explode -< ((ship, asteroids), (ship, keysDown))
 
  where
+  fly = proc keysDown -> do
+    rotation <- rotationMatrix <$> (integral_ 0 . inputRotation) -< keysDown
+    thrust <- inputAcceleration -< keysDown
 
-  notColliding (pos, asteroids) = not $ colliding asteroids pos
+    pos <- wrapped .
+           integrateVector (V2 (640 / 2) (380 / 2)) .
+           integrateVector 0 -< rotation !* thrust
+
+    returnA -< Ship pos rotation
+
+  notColliding = mkFix $ \dt a@(ship, asteroids) ->
+    if colliding asteroids ship
+        then Left mempty
+        else Right a
+
+  explode = proc (ship, _) -> do
+    particles <- particleSystems . (once <|> pure []) -< [shipPos ship]
+    for 3 . returnA -< (Left particles, [])
+
+  aliveShip = proc (ship, keysDown) -> do
+    newBulletWires <- fire -< (ship, keysDown)
+    returnA -< (Right ship, newBulletWires)
 
   inputAcceleration  =  pure (V2 0 (-150)) . when (keyDown SDL.SDLK_UP)
                     <|> 0
@@ -278,6 +293,18 @@ player = proc (keysDown, asteroids) -> do
   inputRotation  =  (negate pi) . when (keyDown SDL.SDLK_LEFT)
                 <|> pi . when (keyDown SDL.SDLK_RIGHT)
                 <|> pure (0 :: Double)
+
+  bulletWire parent = for 2 . aBullet
+    where
+      aBullet = Bullet <$> wrapped .
+                           integrateVector (shipPos parent) .
+                           pure bulletVelocity
+      bulletVelocity = shipRotation parent !* (V2 0 (-300))
+
+  fire = let tryShoot = proc (p, keysDown) -> do
+               isShooting -< keysDown
+               returnA -< [ bulletWire p ]
+         in tryShoot <|> pure []
 
 --------------------------------------------------------------------------------
 integrateVector
