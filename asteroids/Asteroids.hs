@@ -45,6 +45,7 @@ data Asteroid = Asteroid { astPos :: V2 Double
                          , astGeneration :: Int
                          , astSize :: Double
                          , astVelocity :: V2 Double
+                         , astSpikes :: [V2 Double]
                          }
 
 instance Physical Asteroid where
@@ -87,7 +88,7 @@ render screen font Frame{..} = do
           (shipPos + normalize (shipRotation !* (V2 0 (-1))) ^* shipRadius)
         return ()
 
-  mapM_ renderObject fAsteroids
+  mapM_ renderAsteroid fAsteroids
   mapM_ renderObject fBullets
   mapM_ renderPoint fParticles
   renderShip fShip
@@ -113,10 +114,17 @@ render screen font Frame{..} = do
   renderLine (V2 x y) (V2 x' y') =
     SDL.line screen (round x) (round y) (round x') (round y') white
 
+  renderAsteroid ast@Asteroid{..} =
+    let spikes = map (+ astPos) astSpikes
+    in mapM_ (uncurry renderLine) (zip spikes (tail spikes ++ spikes))
+
   white = rgbColor 255 255 255
 
 rgbColor :: Word8 -> Word8 -> Word8 -> SDL.Pixel
-rgbColor r g b = SDL.Pixel (shiftL (fi r) 24 .|. shiftL (fi g) 16 .|. shiftL (fi b) 8 .|. (fi 255))
+rgbColor r g b = SDL.Pixel (shiftL (fi r) 24 .|.
+                            shiftL (fi g) 16 .|.
+                            shiftL (fi b) 8  .|.
+                            255)
   where fi = fromIntegral
 
 --------------------------------------------------------------------------------
@@ -287,7 +295,7 @@ player = proc (keysDown, activeAsteroids) -> do
 
     pos <- wrapped .
            integrateVector (V2 (640 / 2) (380 / 2)) .
-           integrateVector 0 -< rotation !* thrust
+           integrateVectorUpTo 0 150 -< rotation !* thrust
 
     returnA -< Ship pos rotation
 
@@ -325,8 +333,17 @@ player = proc (keysDown, activeAsteroids) -> do
 
 --------------------------------------------------------------------------------
 integrateVector
-  :: (Functor f, Num (f Time)) => f Double -> Wire e m (f Double) (f Double)
+  :: (Functor f, Num (f Time), Metric f)
+  => f Double -> Wire e m (f Double) (f Double)
 integrateVector c = accumT step c where step dt a b = a + dt *^ b
+
+integrateVectorUpTo
+  :: (Functor f, Num (f Time), Metric f)
+  => f Double -> Double -> Wire e m (f Double) (f Double)
+integrateVectorUpTo c m = accumT step c
+  where step dt a b = let v' = a + dt *^ b
+                          n = norm v'
+                      in if n > m then normalize v' ^* m else v'
 
 --------------------------------------------------------------------------------
 rotationMatrix :: Floating a => a -> M22 a
@@ -335,10 +352,23 @@ rotationMatrix r = V2 (V2 (cos r) (-(sin r)))
 
 --------------------------------------------------------------------------------
 asteroid
-  :: Monad m => Int -> Double -> V2 Double -> V2 Double -> Wire e m a Asteroid
+  :: (Monad m, MonadRandom m)
+  => Int -> Double -> V2 Double -> V2 Double -> Wire e m a Asteroid
 asteroid generation size initialPosition velocity = proc _ -> do
+  spikes <- keep . randomSpikes -< size
   pos <- wrapped . integrateVector initialPosition . pure velocity -< ()
-  returnA -< Asteroid pos generation size velocity
+  returnA -< Asteroid pos generation size velocity spikes
+
+ where
+
+  randomSpikes = mkFixM $ \_ size -> do
+    let mkSpike i = do
+          mag <- getRandomR (size / 2, size)
+          theta <- getRandomR (i * (2 * pi) / 7, (i + 1) * (2 * pi) / 7)
+          return $ rotationMatrix theta !* (V2 0 mag)
+    spikes <- mapM mkSpike [0..6]
+    return $ Right spikes
+
 
 --------------------------------------------------------------------------------
 wrapped :: Wire e m (V2 Double) (V2 Double)
