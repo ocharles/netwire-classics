@@ -63,6 +63,7 @@ data Frame = Frame { fShip :: Ship
                    , fAsteroids :: [Asteroid]
                    , fBullets :: [Bullet]
                    , fScore :: Int
+                   , fParticles :: [V2 Double]
                    }
 
 --------------------------------------------------------------------------------
@@ -79,6 +80,7 @@ render screen font Frame{..} = do
 
   mapM_ renderObject fAsteroids
   mapM_ renderObject fBullets
+  mapM_ renderPoint fParticles
   renderShip fShip
 
   scoreS <-
@@ -95,7 +97,9 @@ render screen font Frame{..} = do
     pixel <- (SDL.mapRGB . SDL.surfaceGetPixelFormat) screen 255 255 255
     SDL.circle screen (round x) (round y) (round r) pixel
 
-  renderBounds (Point (V2 x y)) = do
+  renderBounds (Point p) = renderPoint p
+
+  renderPoint (V2 x y) = do
     pixel <- (SDL.mapRGB . SDL.surfaceGetPixelFormat) screen 255 255 255
     SDL.pixel screen (round x) (round y) pixel
 
@@ -171,12 +175,14 @@ asteroids = proc keysDown -> do
 
   points <- countFrom 0 -< sumOf (folded._1.to score) removedAsteroids
 
-  let frame = Frame { fShip = p
-                    , fAsteroids = map fst asteroidAutos
-                    , fBullets = map fst bulletAutos
-                    , fScore = points
-                    }
-  returnA -< frame
+  particles <- particleSystems -< removedAsteroids ^.. folded . _1 . to astPos
+
+  returnA -< Frame { fShip = p
+                   , fAsteroids = map fst asteroidAutos
+                   , fBullets = map fst bulletAutos
+                   , fScore = points
+                   , fParticles = particles
+                   }
 
  where
 
@@ -230,6 +236,24 @@ asteroids = proc keysDown -> do
                   , fromIntegral $ (astGeneration + 1) * 10)
         replicateM 2 (mkAsteroid <$> randomVelocity mag)
     | otherwise         = return []
+
+  particleSystems = go []
+    where
+      go systems = mkGen $ \dt newSystemLocations -> do
+        stepped <- mapM (\w -> stepWire w dt ()) systems
+
+        let alive = [ (r, w) | (Right r, w) <- stepped ]
+        spawned <- concat <$> mapM spawnParticles newSystemLocations
+
+        return (Right (map fst alive), go $ map snd alive ++ spawned)
+
+      spawnParticles at = do
+        n <- getRandomR (4, 8)
+        replicateM n $ do
+          vector <- randomVelocity (5, 10)
+          life <- getRandomR (1, 3)
+          return ((for life <!> ()). integrateVector at . pure vector)
+
 
 --------------------------------------------------------------------------------
 player :: (Monoid e, Monad m) => Wire e m (Set.Set SDL.Keysym) Ship
@@ -292,7 +316,3 @@ stepWires :: Monad m => Wire e m [Wire e m () b] [(b, Wire e m () b)]
 stepWires = mkFixM $ \dt objects -> do
   stepped <- mapM (\o -> stepWire o dt ()) objects
   return $ Right [ (o, w') | (Right o, w') <- stepped ]
-
---------------------------------------------------------------------------------
-randomVector :: (Monad m, MonadRandom m) => m (V2 Double)
-randomVector = liftM2 V2 (getRandomR (-1, 1)) (getRandomR (-1, 1))
