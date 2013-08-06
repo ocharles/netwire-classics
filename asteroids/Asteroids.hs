@@ -2,13 +2,12 @@
 {-# LANGUAGE NoMonomorphismRestriction #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE StandaloneDeriving #-}
-module Asteroids where
+module Main where
 
 import Prelude hiding ((.), id, mapM_, any, concatMap, concat)
 import qualified Prelude
-import Control.Concurrent (threadDelay)
-import Control.Monad (liftM2, replicateM, void)
-import Control.Lens hiding (perform, wrapped)
+import Control.Monad (replicateM, void)
+import Control.Lens hiding (at, perform, wrapped)
 import Control.Monad.Fix (MonadFix)
 import Control.Wire hiding (until)
 import Data.Foldable
@@ -57,6 +56,7 @@ instance Physical Bullet where
 --------------------------------------------------------------------------------
 data Ship = Ship { shipPos :: V2 Double, shipRotation :: M22 Double }
 
+shipRadius :: Double
 shipRadius = 10
 
 instance Physical Ship where
@@ -125,9 +125,9 @@ main = SDL.withInit [SDL.InitEverything] $ do
 
  where
 
-  playForever = switchBy progression asteroids
-   where progression Cleared = asteroids
-         progression Crashed = asteroids
+  playForever = switchBy progression asteroidsRound
+   where progression Cleared = playForever
+         progression Crashed = playForever
 
   go screen font keysDown s w = do
     keysDown' <- parseEvents keysDown
@@ -149,7 +149,6 @@ main = SDL.withInit [SDL.InitEverything] $ do
       SDL.KeyUp k -> parseEvents (Set.delete k keysDown)
       _ -> parseEvents keysDown
 
-
 --------------------------------------------------------------------------------
 keyDown :: Foldable f => SDL.SDLKey -> f SDL.Keysym -> Bool
 keyDown k = elemOf (folded . to SDL.symKey) k
@@ -163,10 +162,10 @@ instance Monoid LevelOver where
   mappend Crashed Crashed = Crashed
   mappend _ _ = Cleared
 
-asteroids
+asteroidsRound
   :: (Applicative m, Monad m, MonadFix m, MonadRandom m)
   => Wire LevelOver m (Set.Set SDL.Keysym) Frame
-asteroids = proc keysDown -> do
+asteroidsRound = proc keysDown -> do
   rec
     bulletAutos <- stepWires . delay [] -< activeBullets
     asteroidAutos <- stepWires . initialAsteroids -< activeAsteroids
@@ -229,12 +228,16 @@ asteroids = proc keysDown -> do
     | otherwise         = return []
 
 --------------------------------------------------------------------------------
+randomVelocity
+  :: (Applicative m, MonadRandom m) => (Double, Double) -> m (V2 Double)
 randomVelocity magRange = do
   v <- V2 <$> getRandomR (-1, 1) <*> getRandomR (-1, 1)
   mag <- getRandomR magRange
   return (normalize v ^* mag)
 
 --------------------------------------------------------------------------------
+particleSystems
+  :: (Applicative m, MonadRandom m) => Wire e m [V2 Double] [V2 Double]
 particleSystems = go []
  where
   go systems = mkGen $ \dt newSystemLocations -> do
@@ -248,10 +251,9 @@ particleSystems = go []
   spawnParticles at = do
     n <- getRandomR (4, 8)
     replicateM n $ do
-      vector <- randomVelocity (5, 10)
+      velocity <- randomVelocity (5, 10)
       life <- getRandomR (1, 3)
-      return ((for life <!> ()). integrateVector at . pure vector)
-
+      return ((for life <!> ()). integrateVector at . pure velocity)
 
 --------------------------------------------------------------------------------
 player
@@ -259,9 +261,10 @@ player
   => Wire LevelOver m
        (Set.Set SDL.Keysym, [Asteroid])
        (Either [V2 Double] Ship, [Wire e m () Bullet])
-player = proc (keysDown, asteroids) -> do
+player = proc (keysDown, activeAsteroids) -> do
   ship <- fly -< keysDown
-  arr snd . (notColliding *** aliveShip) --> arr fst . first explode -< ((ship, asteroids), (ship, keysDown))
+  arr snd . (notColliding *** aliveShip) --> arr fst . first explode
+    -< ((ship, activeAsteroids), (ship, keysDown))
 
  where
   fly = proc keysDown -> do
@@ -274,7 +277,7 @@ player = proc (keysDown, asteroids) -> do
 
     returnA -< Ship pos rotation
 
-  notColliding = mkFix $ \dt a@(ship, asteroids) ->
+  notColliding = mkFix $ \_ a@(ship, asteroids) ->
     if colliding asteroids ship
         then Left mempty
         else Right a
@@ -311,7 +314,6 @@ integrateVector
   :: (Functor f, Num (f Time)) => f Double -> Wire e m (f Double) (f Double)
 integrateVector c = accumT step c where step dt a b = a + dt *^ b
 
-
 --------------------------------------------------------------------------------
 rotationMatrix :: Floating a => a -> M22 a
 rotationMatrix r = V2 (V2 (cos r) (-(sin r)))
@@ -326,7 +328,7 @@ asteroid generation size initialPosition velocity = proc _ -> do
 
 --------------------------------------------------------------------------------
 wrapped :: Wire e m (V2 Double) (V2 Double)
-wrapped = mkFix $ \dt (V2 x y) ->
+wrapped = mkFix $ \_ (V2 x y) ->
   let x' = until (>= 0) (+ 640) $ until (<= 640) (subtract 640) $ x
       y' = until (>= 0) (+ 480) $ until (<= 480) (subtract 480) $ y
   in Right (V2 x' y')
