@@ -80,16 +80,8 @@ render screen font Frame{..} = do
   void $ SDL.mapRGB (SDL.surfaceGetPixelFormat screen) 0 0 0 >>=
     SDL.fillRect screen Nothing
 
-  let renderObject = void . renderBounds . bounds
-      renderShip (Left particles) = mapM_ renderPoint particles
-      renderShip (Right s@Ship{..}) = do
-        renderObject s
-        renderLine shipPos
-          (shipPos + normalize (shipRotation !* (V2 0 (-1))) ^* shipRadius)
-        return ()
-
   mapM_ renderAsteroid fAsteroids
-  mapM_ renderObject fBullets
+  mapM_ (renderBounds . bounds) fBullets
   mapM_ renderPoint fParticles
   renderShip fShip
 
@@ -115,8 +107,20 @@ render screen font Frame{..} = do
     SDL.line screen (round x) (round y) (round x') (round y') white
 
   renderAsteroid ast@Asteroid{..} =
-    let spikes = map (+ astPos) astSpikes
-    in mapM_ (uncurry renderLine) (zip spikes (tail spikes ++ spikes))
+    renderPolygon $ map (+ astPos) astSpikes
+
+  renderPolygon points =
+    mapM_ (uncurry renderLine) (zip points (tail points ++ points))
+
+  renderShip (Left particles) = mapM_ renderPoint particles
+
+  renderShip (Right s@Ship{..}) =
+    let v1 = V2 (-0.5) 1
+        v2 = V2 0 0.5
+        v3 = V2 0.5 1
+        v4 = V2 0 (-1)
+    in renderPolygon $
+      map (( + shipPos) . (shipRotation !*). (^* shipRadius)) [v1, v2, v3, v4]
 
   white = rgbColor 255 255 255
 
