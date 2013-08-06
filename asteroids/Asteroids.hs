@@ -4,11 +4,11 @@
 {-# LANGUAGE StandaloneDeriving #-}
 module Asteroids where
 
-import Prelude hiding ((.), id, mapM_, any, concatMap)
+import Prelude hiding ((.), id, mapM_, any, concatMap, concat)
 import qualified Prelude
 import Control.Concurrent (threadDelay)
 import Control.Monad (liftM2, replicateM, void)
-import Control.Lens hiding (wrapped)
+import Control.Lens hiding (perform, wrapped)
 import Control.Monad.Fix (MonadFix)
 import Control.Wire hiding (until)
 import Data.Foldable
@@ -53,8 +53,10 @@ instance Physical Bullet where
 --------------------------------------------------------------------------------
 data Ship = Ship { shipPos :: V2 Double, shipRotation :: M22 Double }
 
+shipRadius = 10
+
 instance Physical Ship where
-  bounds Ship{..} = Circle shipPos 20
+  bounds Ship{..} = Circle shipPos shipRadius
 
 --------------------------------------------------------------------------------
 data Frame = Frame { fShip :: Ship
@@ -73,7 +75,7 @@ render screen font Frame{..} = do
       renderShip s@Ship{..} = do
         renderObject s
         renderLine shipPos
-          (shipPos + normalize (shipRotation !* (V2 0 (-1))) ^* 20)
+          (shipPos + normalize (shipRotation !* (V2 0 (-1))) ^* shipRadius)
 
   mapM_ renderObject fAsteroids
   mapM_ renderObject fBullets
@@ -160,8 +162,7 @@ asteroids = proc keysDown -> do
     (remainingBullets, remainingAsteroids, removedAsteroids) <-
       collide -< (bulletAutos, asteroidAutos)
 
-    newAsteroids <- arr (concatMap splitAsteroid) -<
-      map fst removedAsteroids
+    newAsteroids <- splitAsteroids -< map fst removedAsteroids
 
     activeBullets <- returnA -< newBulletWires ++ map snd remainingBullets
     activeAsteroids <- returnA -< newAsteroids ++ map snd remainingAsteroids
@@ -185,12 +186,16 @@ asteroids = proc keysDown -> do
     | astGeneration == 3 = 100
     | otherwise          = 0
 
+  randomVelocity magRange = do
+    v <- V2 <$> getRandomR (-1, 1) <*> getRandomR (-1, 1)
+    mag <- getRandomR magRange
+    return (normalize v ^* mag)
+
   initialAsteroids = mkGen $ \dt a -> do
-    n <- getRandomR (1, 1)
-    wires <- replicateM n $
-      asteroid 1 <$> getRandomR (30, 60)
+    wires <- replicateM 4 $
+      asteroid 1 <$> getRandomR (20, 40)
                  <*> (V2 <$> getRandomR (0, 640) <*> getRandomR (0, 480))
-                 <*> (V2 <$> getRandomR (-20, 20) <*> getRandomR (-20, 20))
+                 <*> randomVelocity (10, 20)
     stepWire (delay wires) dt a
 
   collide = mkFix $ \_ (bullets, asteroids) ->
@@ -207,19 +212,24 @@ asteroids = proc keysDown -> do
                returnA -< [ bulletWire p ]
          in tryShoot <|> pure []
 
-  bulletWire parent =
-      Bullet <$> integrateVector (shipPos parent) . pure bulletVelocity
-    where bulletVelocity = shipRotation parent !* (V2 0 (-300))
+  bulletWire parent = for 2 . aBullet
+    where
+      aBullet = Bullet <$> wrapped .
+                           integrateVector (shipPos parent) .
+                           pure bulletVelocity
+      bulletVelocity = shipRotation parent !* (V2 0 (-300))
+
+  splitAsteroids = mkFixM $ \_ asteroids ->
+    (Right . concat) <$> mapM splitAsteroid asteroids
 
   splitAsteroid Asteroid{..}
-    | astGeneration < 3 =
-        let (V2 x y) = astVelocity
-            mkAsteroid vel =
+    | astGeneration < 3 = do
+        let mkAsteroid vel =
               asteroid (succ astGeneration) (astSize / 2) astPos (vel ^* 3)
-        in [ mkAsteroid (rotationMatrix (pi / 2) !* astVelocity)
-           , mkAsteroid (rotationMatrix ((negate pi) / 2) !* astVelocity)
-           ]
-    | otherwise         = []
+            mag = ( fromIntegral $ astGeneration * 10
+                  , fromIntegral $ (astGeneration + 1) * 10)
+        replicateM 2 (mkAsteroid <$> randomVelocity mag)
+    | otherwise         = return []
 
 --------------------------------------------------------------------------------
 player :: (Monoid e, Monad m) => Wire e m (Set.Set SDL.Keysym) Ship
@@ -264,7 +274,7 @@ asteroid generation size initialPosition velocity = proc _ -> do
 wrapped :: Wire e m (V2 Double) (V2 Double)
 wrapped = mkFix $ \dt (V2 x y) ->
   let x' = until (>= 0) (+ 640) $ until (<= 640) (subtract 640) $ x
-      y' = until (>= 0) (+ 480) $ until (<= 480) (subtract 480) $ x
+      y' = until (>= 0) (+ 480) $ until (<= 480) (subtract 480) $ y
   in Right (V2 x' y')
 
 --------------------------------------------------------------------------------
@@ -275,7 +285,7 @@ isShooting =
  where
 
   coolDown =
-    arr head .  multicast [ after 0.05, asSoonAs (not . keyDown SDL.SDLK_SPACE) ]
+    arr head . multicast [ after 0.05, asSoonAs (not . keyDown SDL.SDLK_SPACE) ]
 
 --------------------------------------------------------------------------------
 stepWires :: Monad m => Wire e m [Wire e m () b] [(b, Wire e m () b)]
