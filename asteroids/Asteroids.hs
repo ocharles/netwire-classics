@@ -34,6 +34,10 @@ intersecting c@(Circle _ _) (Point p)   = intersecting c (Circle p 0)
 intersecting p@(Point _) c@(Circle _ _) = intersecting c p
 intersecting (Point _) (Point _)        = False
 
+colliding :: (Physical a, Physical b) => [a] -> b -> Bool
+colliding others this =
+  any (intersecting (bounds this)) . map bounds $ others
+
 --------------------------------------------------------------------------------
 data Asteroid = Asteroid { astPos :: V2 Double
                          , astGeneration :: Int
@@ -156,9 +160,6 @@ asteroids
   :: (Applicative m, Monad m, MonadFix m, MonadRandom m)
   => Wire LevelOver m (Set.Set SDL.Keysym) Frame
 asteroids = proc keysDown -> do
-  p <- player -< keysDown
-  newBulletWires <- fire -< (p, keysDown)
-
   rec
     bulletAutos <- stepWires . delay [] -< activeBullets
     asteroidAutos <- stepWires . initialAsteroids -< activeAsteroids
@@ -167,6 +168,9 @@ asteroids = proc keysDown -> do
       collide -< (bulletAutos, asteroidAutos)
 
     newAsteroids <- splitAsteroids -< map fst removedAsteroids
+
+    p <- player -< (keysDown, map fst remainingAsteroids)
+    newBulletWires <- fire -< (p, keysDown)
 
     activeBullets <- returnA -< newBulletWires ++ map snd remainingBullets
     activeAsteroids <- returnA -< newAsteroids ++ map snd remainingAsteroids
@@ -205,12 +209,9 @@ asteroids = proc keysDown -> do
     stepWire (delay wires) dt a
 
   collide = mkFix $ \_ (bullets, asteroids) ->
-    let colliding others this =
-          any (intersecting (bounds (fst this))) . map (bounds.fst) $
-            others
-        activeBullets = filter (not . colliding asteroids) bullets
-        activeAsteroids = filter (not . colliding bullets) asteroids
-        destroyedAsteroids = filter (colliding bullets) asteroids
+    let activeBullets = filter (not . colliding (map fst asteroids) . fst) bullets
+        activeAsteroids = filter (not . colliding (map fst bullets) . fst) asteroids
+        destroyedAsteroids = filter (colliding (map fst bullets) . fst) asteroids
     in Right (activeBullets, activeAsteroids, destroyedAsteroids)
 
   fire = let tryShoot = proc (p, keysDown) -> do
@@ -256,8 +257,8 @@ asteroids = proc keysDown -> do
 
 
 --------------------------------------------------------------------------------
-player :: (Monoid e, Monad m) => Wire e m (Set.Set SDL.Keysym) Ship
-player = proc keysDown -> do
+player :: (Monoid e, Monad m) => Wire e m (Set.Set SDL.Keysym, [Asteroid]) Ship
+player = proc (keysDown, asteroids) -> do
   rotation <- rotationMatrix <$> (integral_ 0 . inputRotation) -< keysDown
   accel <- uncurry (!*) <$> (id *** inputAcceleration) -< (rotation, keysDown)
 
@@ -265,10 +266,12 @@ player = proc keysDown -> do
          integrateVector (V2 (640 / 2) (380 / 2)) .
          integrateVector 0 -< accel
 
-  let s = Ship pos rotation
-  returnA -< s
+  arr fst . when notColliding -< (Ship pos rotation, asteroids)
 
  where
+
+  notColliding (pos, asteroids) = not $ colliding asteroids pos
+
   inputAcceleration  =  pure (V2 0 (-150)) . when (keyDown SDL.SDLK_UP)
                     <|> 0
 
