@@ -319,7 +319,7 @@ player = proc (keysDown, activeAsteroids) -> do
                 <|> pi . when (keyDown SDL.SDLK_RIGHT)
                 <|> pure (0 :: Double)
 
-  bulletWire parent = for 2 . aBullet
+  bulletWire parent = for 1.5 . aBullet
     where
       aBullet = Bullet <$> wrapped .
                            integrateVector (shipPos parent) .
