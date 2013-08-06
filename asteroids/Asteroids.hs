@@ -51,11 +51,20 @@ data Asteroid = Asteroid { astPos :: V2 Double
 instance Physical Asteroid where
   bounds Asteroid{..} = Circle astPos astSize
 
+class Positioned p where
+  position :: Functor f => (V2 Double -> f (V2 Double)) -> p -> f p
+
+instance Positioned Asteroid where
+  position f x =  f (astPos x) <&> \b -> x { astPos = b }
+
 --------------------------------------------------------------------------------
 data Bullet = Bullet { bulletPos :: V2 Double }
 
 instance Physical Bullet where
   bounds Bullet{..} = Point bulletPos
+
+instance Positioned Bullet where
+  position f x =  f (bulletPos x) <&> \b -> x { bulletPos = b }
 
 --------------------------------------------------------------------------------
 data Ship = Ship { shipPos :: V2 Double, shipRotation :: M22 Double }
@@ -65,6 +74,9 @@ shipRadius = 10
 
 instance Physical Ship where
   bounds Ship{..} = Circle shipPos shipRadius
+
+instance Positioned Ship where
+  position f x =  f (shipPos x) <&> \b -> x { shipPos = b }
 
 --------------------------------------------------------------------------------
 data Frame = Frame { fShip :: Either [V2 Double] Ship
@@ -120,7 +132,7 @@ render screen font Frame{..} = do
         v3 = V2 0.5 1
         v4 = V2 0 (-1)
     in renderPolygon $
-      map (( + shipPos) . (shipRotation !*). (^* shipRadius)) [v1, v2, v3, v4]
+      map ((+ shipPos) . (shipRotation !*). (^* shipRadius)) [v1, v2, v3, v4]
 
   white = rgbColor 255 255 255
 
@@ -207,7 +219,7 @@ asteroidsRound nAsteroids = proc keysDown -> do
 
   (id . unless (== 0) --> for 2 --> inhibit Cleared) -< length activeAsteroids
 
-  let asteroidExplosions = removedAsteroids ^.. folded . _1 . to astPos
+  let asteroidExplosions = removedAsteroids ^.. folded . _1 . position
   particles <- particleSystems -< asteroidExplosions
 
   points <- countFrom 0 -< sumOf (folded._1.to score) removedAsteroids
@@ -309,7 +321,7 @@ player = proc (keysDown, activeAsteroids) -> do
         else Right a
 
   explode = proc (ship, _) -> do
-    particles <- particleSystems . (once --> pure []) -< [shipPos ship]
+    particles <- particleSystems . (once --> pure []) -< [ship ^. position]
     for 3 . returnA -< (Left particles, [])
 
   aliveShip = proc (ship, keysDown) -> do
@@ -326,7 +338,7 @@ player = proc (keysDown, activeAsteroids) -> do
   bulletWire parent = for 1.5 . aBullet
     where
       aBullet = Bullet <$> wrapped .
-                           integrateVector (shipPos parent) .
+                           integrateVector (parent ^. position) .
                            pure bulletVelocity
       bulletVelocity = shipRotation parent !* (V2 0 (-300))
 
