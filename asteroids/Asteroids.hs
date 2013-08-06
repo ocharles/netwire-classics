@@ -7,6 +7,8 @@ module Main where
 import Prelude hiding ((.), id, mapM_, any, concatMap, concat)
 import qualified Prelude
 import Control.Monad (replicateM, void)
+import Data.Bits
+import Data.Word (Word8)
 import Control.Lens hiding (at, perform, wrapped)
 import Control.Monad.Fix (MonadFix)
 import Control.Wire hiding (until)
@@ -15,6 +17,7 @@ import Data.Monoid
 import Linear hiding ((*!))
 import qualified Data.Set as Set
 import qualified Graphics.UI.SDL as SDL
+import qualified Graphics.UI.SDL.Framerate as Framerate
 import qualified Graphics.UI.SDL.Primitives as SDL
 import qualified Graphics.UI.SDL.TTF as SDLTTF
 
@@ -73,7 +76,7 @@ data Frame = Frame { fShip :: Either [V2 Double] Ship
 --------------------------------------------------------------------------------
 render :: SDL.Surface -> SDLTTF.Font -> Frame -> IO ()
 render screen font Frame{..} = do
-  void $ (SDL.mapRGB . SDL.surfaceGetPixelFormat) screen 0 0 0 >>=
+  void $ SDL.mapRGB (SDL.surfaceGetPixelFormat screen) 0 0 0 >>=
     SDL.fillRect screen Nothing
 
   let renderObject = void . renderBounds . bounds
@@ -99,29 +102,36 @@ render screen font Frame{..} = do
 
  where
 
-  renderBounds (Circle (V2 x y) r) = do
-    pixel <- (SDL.mapRGB . SDL.surfaceGetPixelFormat) screen 255 255 255
-    SDL.circle screen (round x) (round y) (round r) pixel
+  renderBounds (Circle (V2 x y) r) =
+    SDL.circle screen (round x) (round y) (round r) white
 
   renderBounds (Point p) = renderPoint p
 
-  renderPoint (V2 x y) = do
-    pixel <- (SDL.mapRGB . SDL.surfaceGetPixelFormat) screen 255 255 255
-    SDL.pixel screen (round x) (round y) pixel
+  renderPoint (V2 x y) =
+    SDL.pixel screen (round x) (round y) white
 
-  renderLine (V2 x y) (V2 x' y') = do
-    pixel <- (SDL.mapRGB . SDL.surfaceGetPixelFormat) screen 255 255 255
-    SDL.line screen (round x) (round y) (round x') (round y') pixel
+  renderLine (V2 x y) (V2 x' y') =
+    SDL.line screen (round x) (round y) (round x') (round y') white
+
+  white = rgbColor 255 255 255
+
+rgbColor :: Word8 -> Word8 -> Word8 -> SDL.Pixel
+rgbColor r g b = SDL.Pixel (shiftL (fi r) 24 .|. shiftL (fi g) 16 .|. shiftL (fi b) 8 .|. (fi 255))
+  where fi = fromIntegral
 
 --------------------------------------------------------------------------------
 main :: IO ()
 main = SDL.withInit [SDL.InitEverything] $ do
-  screen <- SDL.setVideoMode 650 480 32 [SDL.SWSurface]
+  screen <- SDL.setVideoMode 640 480 0 [SDL.SWSurface]
 
   SDLTTF.init
   ka1 <- SDLTTF.openFont "game_over.ttf" 20
 
-  go screen ka1 (Set.empty) clockSession playForever
+  frameRate <- Framerate.new
+  Framerate.init frameRate
+  Framerate.set frameRate 60
+
+  go screen ka1 (Set.empty) clockSession playForever frameRate
 
  where
 
@@ -130,14 +140,16 @@ main = SDL.withInit [SDL.InitEverything] $ do
                      progress Crashed = go 4
                  in switchBy progress (asteroidsRound n)
 
-  go screen font keysDown s w = do
+  go screen font keysDown s w frameRate = do
     keysDown' <- parseEvents keysDown
     (r, w', s') <- stepSession w s keysDown'
 
     case r of
       Right frame -> do
         render screen font frame
-        go screen font keysDown' s' w'
+        Framerate.delay frameRate
+
+        go screen font keysDown' s' w' frameRate
 
       Left _ -> return ()
 
