@@ -125,9 +125,10 @@ main = SDL.withInit [SDL.InitEverything] $ do
 
  where
 
-  playForever = switchBy progression asteroidsRound
-   where progression Cleared = playForever
-         progression Crashed = playForever
+  playForever = go 4
+    where go n = let progress Cleared = go (min 12 $ succ n)
+                     progress Crashed = go 4
+                 in switchBy progress (asteroidsRound n)
 
   go screen font keysDown s w = do
     keysDown' <- parseEvents keysDown
@@ -164,8 +165,8 @@ instance Monoid LevelOver where
 
 asteroidsRound
   :: (Applicative m, Monad m, MonadFix m, MonadRandom m)
-  => Wire LevelOver m (Set.Set SDL.Keysym) Frame
-asteroidsRound = proc keysDown -> do
+  => Int -> Wire LevelOver m (Set.Set SDL.Keysym) Frame
+asteroidsRound nAsteroids = proc keysDown -> do
   rec
     bulletAutos <- stepWires . delay [] -< activeBullets
     asteroidAutos <- stepWires . initialAsteroids -< activeAsteroids
@@ -180,7 +181,7 @@ asteroidsRound = proc keysDown -> do
     activeBullets <- returnA -< newBulletWires ++ map snd remainingBullets
     activeAsteroids <- returnA -< newAsteroids ++ map snd remainingAsteroids
 
-    unless (== 0) <!> Cleared -< length activeAsteroids
+  (id . unless (== 0) --> for 2 --> inhibit Cleared) -< length activeAsteroids
 
   let asteroidExplosions = removedAsteroids ^.. folded . _1 . to astPos
   particles <- particleSystems -< asteroidExplosions
@@ -203,10 +204,11 @@ asteroidsRound = proc keysDown -> do
     | otherwise          = 0
 
   initialAsteroids = mkGen $ \dt a -> do
-    wires <- replicateM 4 $
-      asteroid 1 <$> getRandomR (20, 40)
-                 <*> (V2 <$> getRandomR (0, 640) <*> getRandomR (0, 480))
-                 <*> randomVelocity (10, 20)
+    wires <- replicateM nAsteroids $
+      asteroid 1
+        <$> getRandomR (20, 40)
+        <*> (V2 <$> getRandomR (0, 640) <*> getRandomR (0, 480))
+        <*> randomVelocity (10, 20)
     stepWire (delay wires) dt a
 
   collide = mkFix $ \_ (bullets, asteroids) ->
@@ -283,7 +285,7 @@ player = proc (keysDown, activeAsteroids) -> do
         else Right a
 
   explode = proc (ship, _) -> do
-    particles <- particleSystems . (once <|> pure []) -< [shipPos ship]
+    particles <- particleSystems . (once --> pure []) -< [shipPos ship]
     for 3 . returnA -< (Left particles, [])
 
   aliveShip = proc (ship, keysDown) -> do
