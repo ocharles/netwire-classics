@@ -3,6 +3,7 @@ module Sounds (render, explosion, pew, death) where
 import Prelude hiding ((.), id, length, sin)
 import qualified Prelude
 
+import Data.Bits
 import Data.ByteString hiding (map, take, putStrLn)
 import Data.ByteString.Unsafe (unsafeUseAsCString)
 import Foreign
@@ -12,10 +13,20 @@ import Control.Wire hiding (empty, force, noise, sample)
 
 import Data.Monoid
 
+staticNoise :: [Double]
+staticNoise = map ((subtract 1) . (/ 16384) . fromIntegral) $ noiseFunc 2
+
+ where
+
+  noiseFunc :: Word16 -> [Word16]
+  noiseFunc n = n : (noiseFunc $ nextN n)
+
+  nextN n' = (n' `shiftR` 1) + ((n' .&. 1) `xor` ((n' .&. 2) `shiftR` 1) `shiftL` 14)
+
 --------------------------------------------------------------------------------
 -- | Noise within +/- 1
-noise :: (Monad m, MonadRandom m) => Wire e m a Double
-noise = noiseRM . pure (-1, 1)
+noise :: (Monoid e, Monad m) => Wire e m a Double
+noise =  cycleW staticNoise--(noiseRM . pure (-1, 1))
 
 --------------------------------------------------------------------------------
 -- | Quantize a signal. Left input is the signal, right input is the
