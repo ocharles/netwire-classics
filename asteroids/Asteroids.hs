@@ -147,7 +147,7 @@ rgbColor r g b = SDL.Pixel (shiftL (fi r) 24 .|.
 --------------------------------------------------------------------------------
 main :: IO ()
 main = SDL.withInit [SDL.InitEverything] $ do
-  screen <- SDL.setVideoMode 640 480 0 [SDL.SWSurface]
+  screen <- SDL.setVideoMode 640 480 0 [SDL.SWSurface, SDL.Fullscreen]
 
   SDLTTF.init
   ka1 <- SDLTTF.openFont "ka1.ttf" 10
@@ -192,7 +192,10 @@ main = SDL.withInit [SDL.InitEverything] $ do
     e <- SDL.pollEvent
     case e of
       SDL.NoEvent -> return keysDown
-      SDL.KeyDown k -> parseEvents (Set.insert k keysDown)
+      SDL.KeyDown k ->
+        let keyset = Set.insert k keysDown
+        in if keyDown (SDL.SDLK_q) keyset then undefined
+             else parseEvents keyset
       SDL.KeyUp k -> parseEvents (Set.delete k keysDown)
       _ -> parseEvents keysDown
 
