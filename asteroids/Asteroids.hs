@@ -167,11 +167,12 @@ main = SDL.withInit [SDL.InitEverything] $ do
 
  where
 
-  playForever c d e = game 4
+  playForever c d e = game 4 0
     where
-      game n = let progress Cleared = game (min 12 $ succ n)
-                   progress Crashed = game 4
-               in switchBy progress (asteroidsRound n c d e)
+      game n score =
+        let progress (LevelOver Cleared score) = game (min 12 $ succ n) score
+            progress (LevelOver Crashed _) = game 4 0
+        in switchBy progress (asteroidsRound n c d e score)
 
   go screen font keysDown s w frameRate = do
     keysDown' <- parseEvents keysDown
@@ -200,19 +201,21 @@ keyDown :: Foldable f => SDL.SDLKey -> f SDL.Keysym -> Bool
 keyDown = elemOf (folded . to SDL.symKey)
 
 --------------------------------------------------------------------------------
-data LevelOver = Cleared | Crashed
-  deriving (Show)
+data EndReason = Cleared | Crashed
+
+data LevelOver = LevelOver EndReason Int
 
 instance Monoid LevelOver where
-  mempty = Crashed
-  mappend Crashed Crashed = Crashed
-  mappend _ _ = Cleared
+  mempty = LevelOver Crashed 0
+  mappend (LevelOver Crashed n) (LevelOver Crashed m) = LevelOver Crashed (max n m)
+  mappend (LevelOver _ n) (LevelOver _ m) = LevelOver Cleared (max n m)
 
 asteroidsRound
   :: Int
   -> SDL.Chunk -> SDL.Chunk -> SDL.Chunk
+  -> Int
   -> Wire LevelOver IO (Set.Set SDL.Keysym) Frame
-asteroidsRound nAsteroids c d e = proc keysDown -> do
+asteroidsRound nAsteroids c d e initialScore = proc keysDown -> do
   rec
     bulletAutos <- stepWires . delay [] -< activeBullets
     asteroidAutos <- stepWires . initialAsteroids -< activeAsteroids
@@ -227,15 +230,16 @@ asteroidsRound nAsteroids c d e = proc keysDown -> do
     activeBullets <- returnA -< newBulletWires ++ map snd remainingBullets
     activeAsteroids <- returnA -< newAsteroids ++ map snd remainingAsteroids
 
-  (id . unless (== 0) --> for 2 --> inhibit Cleared) -< length activeAsteroids
-
   let asteroidExplosions = removedAsteroids ^.. folded . _1 . position
   particles <- particleSystems -< asteroidExplosions
 
   (once . playChunk 0 c . edge (not . null) <|> id)  -< asteroidExplosions
   (once . playChunk 1 d . edge (not . null) <|> id)  -< newBulletWires
 
-  points <- countFrom 0 -< sumOf (folded._1.to score) removedAsteroids
+  points <- countFrom initialScore -< sumOf (folded._1.to score) removedAsteroids
+
+  first (unless (== 0)) --> for 2 --> second clearLevel -<
+    (length activeAsteroids, points)
 
   returnA -< Frame { fShip = p
                    , fAsteroids = map fst asteroidAutos
@@ -245,6 +249,8 @@ asteroidsRound nAsteroids c d e = proc keysDown -> do
                    }
 
  where
+
+  clearLevel = mkFix $ \_ points -> Left $ LevelOver Cleared points
 
   score Asteroid{..}
     | astGeneration == 1 = 10
