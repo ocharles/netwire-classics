@@ -2,6 +2,8 @@ module Sounds (render, explosion) where
 
 import Prelude hiding ((.), id, length)
 import Data.ByteString hiding (map, take, putStrLn)
+import Data.ByteString.Unsafe (unsafeUseAsCString)
+import Control.Concurrent
 import Foreign
 import Graphics.UI.SDL.Mixer
 import ForeignChunk
@@ -49,9 +51,10 @@ render :: Int -> WireM IO () Double -> IO Chunk
 render sampleRate wire = do
   let session = counterSession (recip $ fromIntegral sampleRate)
   buffer <- pack <$> go wire session
-  useAsCString buffer $ \buf -> do
-  alloca $ \p -> do
-    poke p (FChunk 1 (castPtr buf) (fromIntegral $ length buffer) 128)
+  unsafeUseAsCString buffer $ \buf -> do
+    sdlBuf <- mallocBytes (length buffer)
+    copyBytes sdlBuf buf (length buffer)
+    p <- new (FChunk 1 (castPtr sdlBuf) (fromIntegral $ length buffer) 128)
     mkFinalizedChunk (castPtr p)
 
  where
@@ -64,12 +67,3 @@ render sampleRate wire = do
       Right sample ->
         let digitized = round $ (sample + 1) * (fromIntegral $ (maxBound :: Word8) `div` 2)
         in digitized `seq` (digitized :) <$> go w s
-
-{----------------------------------------------------------------------------------}
-{-main :: IO ()-}
-{-main = do-}
-  {-let sampleRate = 44100-}
-  {-chunk <- render sampleRate explosion-}
-  {-openAudio sampleRate AudioU8 2 512-}
-  {-tryPlayChannel 0 chunk 0 >>= print-}
-  {-threadDelay 10000000-}

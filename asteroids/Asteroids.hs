@@ -4,6 +4,8 @@
 {-# LANGUAGE StandaloneDeriving #-}
 module Main where
 
+import qualified Sounds
+
 import Prelude hiding ((.), id, mapM_, any, concatMap, concat)
 import qualified Prelude
 import Control.Monad (replicateM, void)
@@ -17,6 +19,7 @@ import Data.Monoid
 import Linear hiding ((*!))
 import qualified Data.Set as Set
 import qualified Graphics.UI.SDL as SDL
+import qualified Graphics.UI.SDL.Mixer as SDL
 import qualified Graphics.UI.SDL.Framerate as Framerate
 import qualified Graphics.UI.SDL.Primitives as SDL
 import qualified Graphics.UI.SDL.TTF as SDLTTF
@@ -155,14 +158,18 @@ main = SDL.withInit [SDL.InitEverything] $ do
   Framerate.init frameRate
   Framerate.set frameRate 60
 
-  go screen ka1 (Set.empty) clockSession playForever frameRate
+  let audioSampleRate = 44100 -- 22050
+  [explosionChunk] <- mapM (Sounds.render audioSampleRate) [Sounds.explosion]
+  SDL.openAudio audioSampleRate SDL.AudioU8 2 512
+
+  go screen ka1 (Set.empty) clockSession (playForever explosionChunk) frameRate
 
  where
 
-  playForever = go 4
+  playForever c = go 4
     where go n = let progress Cleared = go (min 12 $ succ n)
                      progress Crashed = go 4
-                 in switchBy progress (asteroidsRound n)
+                 in switchBy progress (asteroidsRound n c)
 
   go screen font keysDown s w frameRate = do
     keysDown' <- parseEvents keysDown
@@ -200,9 +207,8 @@ instance Monoid LevelOver where
   mappend _ _ = Cleared
 
 asteroidsRound
-  :: (Applicative m, Monad m, MonadFix m, MonadRandom m)
-  => Int -> Wire LevelOver m (Set.Set SDL.Keysym) Frame
-asteroidsRound nAsteroids = proc keysDown -> do
+  :: Int -> SDL.Chunk -> Wire LevelOver IO (Set.Set SDL.Keysym) Frame
+asteroidsRound nAsteroids chunk = proc keysDown -> do
   rec
     bulletAutos <- stepWires . delay [] -< activeBullets
     asteroidAutos <- stepWires . initialAsteroids -< activeAsteroids
@@ -221,6 +227,7 @@ asteroidsRound nAsteroids = proc keysDown -> do
 
   let asteroidExplosions = removedAsteroids ^.. folded . _1 . position
   particles <- particleSystems -< asteroidExplosions
+  (once . playChunk chunk . edge (not . null) <|> id)  -< asteroidExplosions
 
   points <- countFrom 0 -< sumOf (folded._1.to score) removedAsteroids
 
@@ -232,6 +239,11 @@ asteroidsRound nAsteroids = proc keysDown -> do
                    }
 
  where
+
+  playChunk chunk = mkFixM $ \_ a -> do
+    SDL.haltChannel 0
+    SDL.playChannel 0 chunk 0
+    return (Right a)
 
   score Asteroid{..}
     | astGeneration == 1 = 10
