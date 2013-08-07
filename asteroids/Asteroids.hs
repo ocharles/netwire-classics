@@ -103,7 +103,7 @@ render screen font Frame{..} = do
     SDLTTF.renderTextSolid font ("SCORE: " ++ show fScore)
       (SDL.Color 255 255 255)
 
-  SDL.blitSurface scoreS Nothing screen Nothing
+  SDL.blitSurface scoreS Nothing screen (Just $ SDL.Rect 20 20 100 50)
 
   SDL.flip screen
 
@@ -150,7 +150,7 @@ main = SDL.withInit [SDL.InitEverything] $ do
   screen <- SDL.setVideoMode 640 480 0 [SDL.SWSurface]
 
   SDLTTF.init
-  ka1 <- SDLTTF.openFont "ka1.ttf" 20
+  ka1 <- SDLTTF.openFont "ka1.ttf" 10
 
   frameRate <- Framerate.new
   Framerate.init frameRate
