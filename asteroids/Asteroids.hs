@@ -159,17 +159,20 @@ main = SDL.withInit [SDL.InitEverything] $ do
   Framerate.set frameRate 60
 
   let audioSampleRate = 44100 -- 22050
-  [explosionChunk] <- mapM (Sounds.render audioSampleRate) [Sounds.explosion]
+  [explosionChunk, pew, deathSound] <- mapM (Sounds.render audioSampleRate)
+    [Sounds.explosion, Sounds.pew, Sounds.death]
   SDL.openAudio audioSampleRate SDL.AudioU8 2 512
 
-  go screen ka1 (Set.empty) clockSession (playForever explosionChunk) frameRate
+  go screen ka1 (Set.empty) clockSession
+    (playForever explosionChunk pew deathSound)
+    frameRate
 
  where
 
-  playForever c = go 4
+  playForever c d e = go 4
     where go n = let progress Cleared = go (min 12 $ succ n)
                      progress Crashed = go 4
-                 in switchBy progress (asteroidsRound n c)
+                 in switchBy progress (asteroidsRound n c d e)
 
   go screen font keysDown s w frameRate = do
     keysDown' <- parseEvents keysDown
@@ -207,8 +210,10 @@ instance Monoid LevelOver where
   mappend _ _ = Cleared
 
 asteroidsRound
-  :: Int -> SDL.Chunk -> Wire LevelOver IO (Set.Set SDL.Keysym) Frame
-asteroidsRound nAsteroids chunk = proc keysDown -> do
+  :: Int
+  -> SDL.Chunk -> SDL.Chunk -> SDL.Chunk
+  -> Wire LevelOver IO (Set.Set SDL.Keysym) Frame
+asteroidsRound nAsteroids c d e = proc keysDown -> do
   rec
     bulletAutos <- stepWires . delay [] -< activeBullets
     asteroidAutos <- stepWires . initialAsteroids -< activeAsteroids
@@ -218,7 +223,7 @@ asteroidsRound nAsteroids chunk = proc keysDown -> do
 
     newAsteroids <- splitAsteroids -< map fst removedAsteroids
 
-    (p, newBulletWires) <- player -< (keysDown, map fst remainingAsteroids)
+    (p, newBulletWires) <- player e -< (keysDown, map fst remainingAsteroids)
 
     activeBullets <- returnA -< newBulletWires ++ map snd remainingBullets
     activeAsteroids <- returnA -< newAsteroids ++ map snd remainingAsteroids
@@ -227,7 +232,9 @@ asteroidsRound nAsteroids chunk = proc keysDown -> do
 
   let asteroidExplosions = removedAsteroids ^.. folded . _1 . position
   particles <- particleSystems -< asteroidExplosions
-  (once . playChunk chunk . edge (not . null) <|> id)  -< asteroidExplosions
+
+  (once . playChunk 0 c . edge (not . null) <|> id)  -< asteroidExplosions
+  (once . playChunk 1 d . edge (not . null) <|> id)  -< newBulletWires
 
   points <- countFrom 0 -< sumOf (folded._1.to score) removedAsteroids
 
@@ -239,11 +246,6 @@ asteroidsRound nAsteroids chunk = proc keysDown -> do
                    }
 
  where
-
-  playChunk chunk = mkFixM $ \_ a -> do
-    SDL.haltChannel 0
-    SDL.playChannel 0 chunk 0
-    return (Right a)
 
   score Asteroid{..}
     | astGeneration == 1 = 10
@@ -307,11 +309,12 @@ particleSystems = go []
 
 --------------------------------------------------------------------------------
 player
-  :: (Monoid e, Monad m, MonadRandom m, Applicative m)
-  => Wire LevelOver m
+  :: (Monoid e, Monad m)
+  => SDL.Chunk
+  -> Wire LevelOver IO
        (Set.Set SDL.Keysym, [Asteroid])
        (Either [V2 Double] Ship, [Wire e m () Bullet])
-player = proc (keysDown, activeAsteroids) -> do
+player deathSound = proc (keysDown, activeAsteroids) -> do
   ship <- fly -< keysDown
   arr snd . (notColliding *** aliveShip) --> arr fst . first explode
     -< ((ship, activeAsteroids), (ship, keysDown))
@@ -333,6 +336,7 @@ player = proc (keysDown, activeAsteroids) -> do
         else Right a
 
   explode = proc (ship, _) -> do
+    (playChunk 2 deathSound . once) <|> id -< ()
     particles <- particleSystems . (once --> pure []) -< [ship ^. position]
     for 3 . returnA -< (Left particles, [])
 
@@ -358,6 +362,12 @@ player = proc (keysDown, activeAsteroids) -> do
                isShooting -< keysDown
                returnA -< [ bulletWire p ]
          in tryShoot <|> pure []
+
+
+playChunk channel chunk = mkFixM $ \_ a -> do
+  SDL.haltChannel channel
+  SDL.playChannel channel chunk 0
+  return (Right a)
 
 --------------------------------------------------------------------------------
 integrateVector

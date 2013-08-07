@@ -1,6 +1,8 @@
-module Sounds (render, explosion) where
+module Sounds (render, explosion, pew, death) where
 
-import Prelude hiding ((.), id, length)
+import Prelude hiding ((.), id, length, sin)
+import qualified Prelude
+
 import Data.ByteString hiding (map, take, putStrLn)
 import Data.ByteString.Unsafe (unsafeUseAsCString)
 import Control.Concurrent
@@ -10,6 +12,11 @@ import ForeignChunk
 import Control.Wire hiding (empty, force, noise, sample)
 
 import Data.Monoid
+
+
+import Debug.Trace
+
+traceId x = traceShow x x
 
 --------------------------------------------------------------------------------
 -- | Noise within +/- 1
@@ -33,8 +40,7 @@ rateReduce = mkPure $ \_ (s, rate) ->
 --------------------------------------------------------------------------------
 -- | Decay a single over a period of time, inhibiting after.
 decay :: (Monoid e, Monad m) => Time -> Wire e m Double Double
-decay duration = for duration . decayer
-  where decayer = (*) <$> integral_ 1 . pure ((-1) / duration) <*> id
+decay duration = id * (require (>0) . integral_ 1 . pure ((-1) / duration))
 
 --------------------------------------------------------------------------------
 -- | Gate a signal to only pass above a certain threshold. Left input is the
@@ -45,6 +51,20 @@ gate = mkFix $ \_ (s, threshold) -> Right $ if s >= threshold then s else 0
 --------------------------------------------------------------------------------
 explosion :: (Monoid e, Monad m, MonadRandom m) => Wire e m a Double
 explosion = decay 2 . gate . (rateReduce &&& 0.4) . (quantize &&& 500) . (noise &&& 0.2)
+
+death :: (Monoid e, Monad m, MonadRandom m) => Wire e m a Double
+death = decay 5 . gate . (rateReduce &&& 0.3) . (quantize &&& 3000) . (noise &&& 0.2)
+
+clamp = mkFix $ \_ x -> Right $ min 1 (max x (-1))
+
+--------------------------------------------------------------------------------
+pew :: (Monoid e, Monad m) => Wire e m a Double
+pew = decay 0.5 . rateReduce . (((clamp . (sinDrop * 1000)) / 2) &&& 5000)
+  where sinDrop = sin . ((+ 1000) <$> decay 0.5 . 2000)
+
+--------------------------------------------------------------------------------
+sin :: Monad m => Wire e m Double Double
+sin = (\t freq -> Prelude.sin (t * freq)) <$> time <*> id
 
 --------------------------------------------------------------------------------
 render :: Int -> WireM IO () Double -> IO Chunk

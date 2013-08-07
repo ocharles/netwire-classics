@@ -5,7 +5,7 @@ let
   haskell = haskellPackages;
   inherit (haskell) cabal cabalInstall netwire SDL lens SDLMixer distributive
   hashable reflection semigroupoids semigroups tagged transformers
-  unorderedContainers vector doctest filepath simpleReflect;
+  unorderedContainers vector doctest filepath simpleReflect async;
 
   SDLgfx = cabal.mkDerivation (self: {
   pname = "SDL-gfx";
@@ -54,5 +54,6 @@ in cabal.mkDerivation (self: {
   pname = "netwire-classics";
   version = "0.1.0.0";
   src = ./.;
-  buildDepends = [ cabalInstall netwire SDL SDLMixer lens linear SDLgfx SDLttf ];
+  buildDepends = [ cabalInstall netwire SDL SDLMixer lens linear SDLgfx SDLttf
+  async ];
 })
