@@ -393,19 +393,19 @@ asteroid
   :: (Monad m, MonadRandom m)
   => Int -> Double -> V2 Double -> V2 Double -> Wire e m a Asteroid
 asteroid generation size initialPosition velocity = proc _ -> do
-  spikes <- keep . randomSpikes -< size
+  spikes <- randomSpikes -< size
   pos <- wrapped . integrateVector initialPosition . pure velocity -< ()
   returnA -< Asteroid pos generation size velocity spikes
 
  where
 
-  randomSpikes = mkFixM $ \_ size -> do
+  randomSpikes = mkGen $ \_ size -> do
     let mkSpike i = do
           mag <- getRandomR (size / 2, size)
           theta <- getRandomR (i * (2 * pi) / 7, (i + 1) * (2 * pi) / 7)
           return $ rotationMatrix theta !* V2 0 mag
     spikes <- mapM mkSpike [0..6]
-    return $ Right spikes
+    return (Right spikes, pure spikes)
 
 
 --------------------------------------------------------------------------------
