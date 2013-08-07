@@ -5,18 +5,12 @@ import qualified Prelude
 
 import Data.ByteString hiding (map, take, putStrLn)
 import Data.ByteString.Unsafe (unsafeUseAsCString)
-import Control.Concurrent
 import Foreign
 import Graphics.UI.SDL.Mixer
 import ForeignChunk
 import Control.Wire hiding (empty, force, noise, sample)
 
 import Data.Monoid
-
-
-import Debug.Trace
-
-traceId x = traceShow x x
 
 --------------------------------------------------------------------------------
 -- | Noise within +/- 1
@@ -28,7 +22,7 @@ noise = noiseRM . pure (-1, 1)
 -- quantization factor (0 - 1).
 quantize :: Wire e m (Double, Double) Double
 quantize = mkFix $ \_ (s, ratio) ->
-  Right $ ratio * (fromIntegral (floor (s / ratio) :: Int))
+  Right $ ratio * fromIntegral (floor (s / ratio) :: Int)
 
 --------------------------------------------------------------------------------
 -- | Reduce sampling frequency. Left input is the signal, right input is
@@ -55,6 +49,8 @@ explosion = decay 2 . gate . (rateReduce &&& 0.4) . (quantize &&& 500) . (noise 
 death :: (Monoid e, Monad m, MonadRandom m) => Wire e m a Double
 death = decay 5 . gate . (rateReduce &&& 0.3) . (quantize &&& 3000) . (noise &&& 0.2)
 
+--------------------------------------------------------------------------------
+clamp :: Wire e m Double Double
 clamp = mkFix $ \_ x -> Right $ min 1 (max x (-1))
 
 --------------------------------------------------------------------------------
@@ -85,5 +81,5 @@ render sampleRate wire = do
     case r of
       Left _ -> return []
       Right sample ->
-        let digitized = round $ (sample + 1) * (fromIntegral $ (maxBound :: Word8) `div` 2)
+        let digitized = round $ (sample + 1) * fromIntegral ((maxBound :: Word8) `div` 2)
         in digitized `seq` (digitized :) <$> go w s

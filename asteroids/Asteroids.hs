@@ -12,7 +12,6 @@ import Control.Monad (replicateM, void)
 import Data.Bits
 import Data.Word (Word8)
 import Control.Lens hiding (at, perform, wrapped)
-import Control.Monad.Fix (MonadFix)
 import Control.Wire hiding (until)
 import Data.Foldable
 import Data.Monoid
@@ -121,15 +120,14 @@ render screen font Frame{..} = do
   renderLine (V2 x y) (V2 x' y') =
     SDL.line screen (round x) (round y) (round x') (round y') white
 
-  renderAsteroid ast@Asteroid{..} =
-    renderPolygon $ map (+ astPos) astSpikes
+  renderAsteroid Asteroid{..} = renderPolygon $ map (+ astPos) astSpikes
 
   renderPolygon points =
     mapM_ (uncurry renderLine) (zip points (tail points ++ points))
 
   renderShip (Left particles) = mapM_ renderPoint particles
 
-  renderShip (Right s@Ship{..}) =
+  renderShip (Right Ship{..}) =
     let v1 = V2 (-0.5) 1
         v2 = V2 0 0.5
         v3 = V2 0.5 1
@@ -163,16 +161,17 @@ main = SDL.withInit [SDL.InitEverything] $ do
     [Sounds.explosion, Sounds.pew, Sounds.death]
   SDL.openAudio audioSampleRate SDL.AudioU8 2 512
 
-  go screen ka1 (Set.empty) clockSession
+  go screen ka1 Set.empty clockSession
     (playForever explosionChunk pew deathSound)
     frameRate
 
  where
 
-  playForever c d e = go 4
-    where go n = let progress Cleared = go (min 12 $ succ n)
-                     progress Crashed = go 4
-                 in switchBy progress (asteroidsRound n c d e)
+  playForever c d e = game 4
+    where
+      game n = let progress Cleared = game (min 12 $ succ n)
+                   progress Crashed = game 4
+               in switchBy progress (asteroidsRound n c d e)
 
   go screen font keysDown s w frameRate = do
     keysDown' <- parseEvents keysDown
@@ -198,7 +197,7 @@ main = SDL.withInit [SDL.InitEverything] $ do
 
 --------------------------------------------------------------------------------
 keyDown :: Foldable f => SDL.SDLKey -> f SDL.Keysym -> Bool
-keyDown k = elemOf (folded . to SDL.symKey) k
+keyDown = elemOf (folded . to SDL.symKey)
 
 --------------------------------------------------------------------------------
 data LevelOver = Cleared | Crashed
@@ -347,7 +346,7 @@ player deathSound = proc (keysDown, activeAsteroids) -> do
   inputAcceleration  =  pure (V2 0 (-150)) . when (keyDown SDL.SDLK_UP)
                     <|> 0
 
-  inputRotation  =  (negate pi) . when (keyDown SDL.SDLK_LEFT)
+  inputRotation  =  negate pi . when (keyDown SDL.SDLK_LEFT)
                 <|> pi . when (keyDown SDL.SDLK_RIGHT)
                 <|> pure (0 :: Double)
 
@@ -356,14 +355,15 @@ player deathSound = proc (keysDown, activeAsteroids) -> do
       aBullet = Bullet <$> wrapped .
                            integrateVector (parent ^. position) .
                            pure bulletVelocity
-      bulletVelocity = shipRotation parent !* (V2 0 (-300))
+      bulletVelocity = shipRotation parent !* V2 0 (-300)
 
   fire = let tryShoot = proc (p, keysDown) -> do
                isShooting -< keysDown
                returnA -< [ bulletWire p ]
          in tryShoot <|> pure []
 
-
+--------------------------------------------------------------------------------
+playChunk :: SDL.Channel -> SDL.Chunk -> Wire e IO a a
 playChunk channel chunk = mkFixM $ \_ a -> do
   SDL.haltChannel channel
   SDL.playChannel channel chunk 0
@@ -373,7 +373,7 @@ playChunk channel chunk = mkFixM $ \_ a -> do
 integrateVector
   :: (Functor f, Num (f Time), Metric f)
   => f Double -> Wire e m (f Double) (f Double)
-integrateVector c = accumT step c where step dt a b = a + dt *^ b
+integrateVector = accumT step where step dt a b = a + dt *^ b
 
 integrateVectorUpTo
   :: (Functor f, Num (f Time), Metric f)
@@ -403,7 +403,7 @@ asteroid generation size initialPosition velocity = proc _ -> do
     let mkSpike i = do
           mag <- getRandomR (size / 2, size)
           theta <- getRandomR (i * (2 * pi) / 7, (i + 1) * (2 * pi) / 7)
-          return $ rotationMatrix theta !* (V2 0 mag)
+          return $ rotationMatrix theta !* V2 0 mag
     spikes <- mapM mkSpike [0..6]
     return $ Right spikes
 
@@ -411,8 +411,8 @@ asteroid generation size initialPosition velocity = proc _ -> do
 --------------------------------------------------------------------------------
 wrapped :: Wire e m (V2 Double) (V2 Double)
 wrapped = mkFix $ \_ (V2 x y) ->
-  let x' = until (>= 0) (+ 640) $ until (<= 640) (subtract 640) $ x
-      y' = until (>= 0) (+ 480) $ until (<= 480) (subtract 480) $ y
+  let x' = until (>= 0) (+ 640) $ until (<= 640) (subtract 640) x
+      y' = until (>= 0) (+ 480) $ until (<= 480) (subtract 480) y
   in Right (V2 x' y')
 
 --------------------------------------------------------------------------------

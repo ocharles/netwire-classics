@@ -7,7 +7,6 @@ module ForeignChunk where
 
 {-# LINE 5 "Chunk.hsc" #-}
 
-import Data.ByteString
 import Data.Word
 import Foreign
 import Foreign.C.Types
