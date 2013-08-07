@@ -150,7 +150,7 @@ main = SDL.withInit [SDL.InitEverything] $ do
   screen <- SDL.setVideoMode 640 480 0 [SDL.SWSurface]
 
   SDLTTF.init
-  ka1 <- SDLTTF.openFont "game_over.ttf" 20
+  ka1 <- SDLTTF.openFont "ka1.ttf" 20
 
   frameRate <- Framerate.new
   Framerate.init frameRate
@@ -331,7 +331,7 @@ player deathSound = proc (keysDown, activeAsteroids) -> do
 
     pos <- wrapped .
            integrateVector (V2 (640 / 2) (380 / 2)) .
-           integrateVectorUpTo 0 150 -< rotation !* thrust
+           integrateVectorUpTo 0 100 -< rotation !* thrust
 
     returnA -< Ship pos rotation
 
@@ -349,7 +349,7 @@ player deathSound = proc (keysDown, activeAsteroids) -> do
     newBulletWires <- fire -< (ship, keysDown)
     returnA -< (Right ship, newBulletWires)
 
-  inputAcceleration  =  pure (V2 0 (-150)) . when (keyDown SDL.SDLK_UP)
+  inputAcceleration  =  pure (V2 0 (-75)) . when (keyDown SDL.SDLK_UP)
                     <|> 0
 
   inputRotation  =  negate pi . when (keyDown SDL.SDLK_LEFT)
