@@ -239,6 +239,7 @@ asteroidsRound nAsteroids c d e initialScore = proc keysDown -> do
   -- Ship, asteroids, bullets
   rec
     bulletAutos <- stepWires . delay [] -< activeBullets
+    ufoAutos <- stepWires . delay [] -< activeUfos
     asteroidAutos <- stepWires . initialAsteroids -< activeAsteroids
 
     (remainingBullets, remainingAsteroids, removedAsteroids) <-
@@ -247,26 +248,12 @@ asteroidsRound nAsteroids c d e initialScore = proc keysDown -> do
     newAsteroids <- splitAsteroids -< map fst removedAsteroids
 
     (p, newBulletWires) <- player e -< (keysDown, map fst remainingAsteroids)
+    newUfoWires <- pure [ largeUfo ] . ufoSpawned <|> pure [] -< ()
 
     activeBullets <- returnA -< newBulletWires ++ map snd remainingBullets
+                                 ++ concatMap (snd . fst) ufoAutos
     activeAsteroids <- returnA -< newAsteroids ++ map snd remainingAsteroids
-
-  -- Ufos
-  newUfoWires <- pure [ largeUfo ] . ufoSpawned <|> pure [] -< ()
-  rec
-    previousUfoWire <- delay [] -< remainingUfoWires
-    ufoAutos <- stepWires -< previousUfoWire ++ newUfoWires
-
-    let remainingUfoWires = map snd ufoAutos
-
-  -- UFO's shooting
-  let newUfoBulletWires = concatMap (snd . fst) ufoAutos
-
-  rec
-    previousBulletWires <- delay [] -< remainingBulletWires
-    ufoBulletAutos <- stepWires -< previousBulletWires ++ newUfoBulletWires
-
-    let remainingBulletWires = map snd ufoBulletAutos
+    activeUfos <- returnA -< newUfoWires ++ map snd ufoAutos
 
   -- Points/explosions
   let asteroidExplosions = removedAsteroids ^.. folded . _1 . position
@@ -283,7 +270,7 @@ asteroidsRound nAsteroids c d e initialScore = proc keysDown -> do
 
   returnA -< Frame { fShip = p
                    , fAsteroids = map fst asteroidAutos
-                   , fBullets = map fst bulletAutos ++ map fst ufoBulletAutos
+                   , fBullets = map fst bulletAutos
                    , fScore = points
                    , fParticles = particles
                    , fUfo = ufoAutos ^.. traverse . _1 . _1
