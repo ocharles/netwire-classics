@@ -10,6 +10,7 @@ import Prelude hiding ((.), id, mapM_, any, concatMap, concat)
 import qualified Prelude
 import Control.Monad (replicateM, void)
 import Data.Bits
+import Data.Ix (inRange)
 import Data.Word (Word8)
 import Control.Lens hiding (at, perform, wrapped)
 import Control.Wire hiding (until)
@@ -86,7 +87,20 @@ data Frame = Frame { fShip :: Either [V2 Double] Ship
                    , fBullets :: [Bullet]
                    , fScore :: Int
                    , fParticles :: [V2 Double]
+                   , fUfo :: [UFO]
                    }
+
+data UFO = UFO { ufoPos :: V2 Double, ufoSize :: UFOSize }
+
+data UFOSize = Small | Large
+
+instance Positioned UFO where
+  position f x =  f (ufoPos x) <&> \b -> x { ufoPos = b }
+
+instance Physical UFO where
+  bounds UFO{..} = Circle ufoPos $ case ufoSize of
+                                     Small -> 10
+                                     Large -> 30
 
 --------------------------------------------------------------------------------
 render :: SDL.Surface -> SDLTTF.Font -> Frame -> IO ()
@@ -97,6 +111,7 @@ render screen font Frame{..} = do
   mapM_ renderAsteroid fAsteroids
   mapM_ (renderBounds . bounds) fBullets
   mapM_ renderPoint fParticles
+  mapM_ renderUfo fUfo
   renderShip fShip
 
   scoreS <-
@@ -135,6 +150,8 @@ render screen font Frame{..} = do
     in renderPolygon $
       map ((+ shipPos) . (shipRotation !*). (^* shipRadius)) [v1, v2, v3, v4]
 
+  renderUfo = renderBounds . bounds
+
   white = rgbColor 255 255 255
 
 rgbColor :: Word8 -> Word8 -> Word8 -> SDL.Pixel
@@ -147,7 +164,7 @@ rgbColor r g b = SDL.Pixel (shiftL (fi r) 24 .|.
 --------------------------------------------------------------------------------
 main :: IO ()
 main = SDL.withInit [SDL.InitEverything] $ do
-  screen <- SDL.setVideoMode 640 480 0 [SDL.SWSurface, SDL.Fullscreen]
+  screen <- SDL.setVideoMode 800 600 0 [SDL.SWSurface]--], SDL.Fullscreen]
 
   SDLTTF.init
   ka1 <- SDLTTF.openFont "ka1.ttf" 10
@@ -219,6 +236,7 @@ asteroidsRound
   -> Int
   -> Wire LevelOver IO (Set.Set SDL.Keysym) Frame
 asteroidsRound nAsteroids c d e initialScore = proc keysDown -> do
+  -- Ship, asteroids, bullets
   rec
     bulletAutos <- stepWires . delay [] -< activeBullets
     asteroidAutos <- stepWires . initialAsteroids -< activeAsteroids
@@ -233,22 +251,42 @@ asteroidsRound nAsteroids c d e initialScore = proc keysDown -> do
     activeBullets <- returnA -< newBulletWires ++ map snd remainingBullets
     activeAsteroids <- returnA -< newAsteroids ++ map snd remainingAsteroids
 
+  -- Ufos
+  newUfoWires <- pure [ largeUfo ] . ufoSpawned <|> pure [] -< ()
+  rec
+    previousUfoWire <- delay [] -< remainingUfoWires
+    ufoAutos <- stepWires -< previousUfoWire ++ newUfoWires
+
+    let remainingUfoWires = map snd ufoAutos
+
+  -- UFO's shooting
+  let newUfoBulletWires = concatMap (snd . fst) ufoAutos
+
+  rec
+    previousBulletWires <- delay [] -< remainingBulletWires
+    ufoBulletAutos <- stepWires -< previousBulletWires ++ newUfoBulletWires
+
+    let remainingBulletWires = map snd ufoBulletAutos
+
+  -- Points/explosions
   let asteroidExplosions = removedAsteroids ^.. folded . _1 . position
   particles <- particleSystems -< asteroidExplosions
+  points <- countFrom initialScore -< sumOf (folded._1.to score) removedAsteroids
 
+  -- Sound effects
   (once . playChunk 0 c . edge (not . null) <|> id)  -< asteroidExplosions
   (once . playChunk 1 d . edge (not . null) <|> id)  -< newBulletWires
 
-  points <- countFrom initialScore -< sumOf (folded._1.to score) removedAsteroids
-
+  -- End game semantics
   first (unless (== 0)) --> for 2 --> second clearLevel -<
     (length activeAsteroids, points)
 
   returnA -< Frame { fShip = p
                    , fAsteroids = map fst asteroidAutos
-                   , fBullets = map fst bulletAutos
+                   , fBullets = map fst bulletAutos ++ map fst ufoBulletAutos
                    , fScore = points
                    , fParticles = particles
+                   , fUfo = ufoAutos ^.. traverse . _1 . _1
                    }
 
  where
@@ -265,7 +303,7 @@ asteroidsRound nAsteroids c d e initialScore = proc keysDown -> do
     wires <- replicateM nAsteroids $
       asteroid 1
         <$> getRandomR (20, 40)
-        <*> (V2 <$> getRandomR (0, 640) <*> getRandomR (0, 480))
+        <*> (V2 <$> getRandomR (0, 800) <*> getRandomR (0, 600))
         <*> randomVelocity (10, 20)
     stepWire (delay wires) dt a
 
@@ -282,10 +320,12 @@ asteroidsRound nAsteroids c d e initialScore = proc keysDown -> do
     | astGeneration < 3 = do
         let mkAsteroid vel =
               asteroid (succ astGeneration) (astSize / 2) astPos (vel ^* 3)
-            mag = ( fromIntegral $ astGeneration * 10
-                  , fromIntegral $ (astGeneration + 1) * 10)
+            mag = ( fromIntegral $ astGeneration * 20
+                  , fromIntegral $ (astGeneration + 1) * 20)
         replicateM 2 (mkAsteroid <$> randomVelocity mag)
     | otherwise         = return []
+
+  ufoSpawned = once --  . wackelkontaktM (1 / 500) . after 60
 
 --------------------------------------------------------------------------------
 randomVelocity
@@ -333,7 +373,7 @@ player deathSound = proc (keysDown, activeAsteroids) -> do
     thrust <- inputAcceleration -< keysDown
 
     pos <- wrapped .
-           integrateVector (V2 (640 / 2) (380 / 2)) .
+           integrateVector (V2 (800 / 2) (600 / 2)) .
            integrateVectorUpTo 0 100 -< rotation !* thrust
 
     returnA -< Ship pos rotation
@@ -359,17 +399,19 @@ player deathSound = proc (keysDown, activeAsteroids) -> do
                 <|> pi . when (keyDown SDL.SDLK_RIGHT)
                 <|> pure (0 :: Double)
 
-  bulletWire parent = for 1.5 . aBullet
-    where
-      aBullet = Bullet <$> wrapped .
-                           integrateVector (parent ^. position) .
-                           pure bulletVelocity
-      bulletVelocity = shipRotation parent !* V2 0 (-300)
+  bulletWire ship = bullet (shipPos ship) (shipRotation ship !* V2 0 (-300))
 
   fire = let tryShoot = proc (p, keysDown) -> do
                isShooting -< keysDown
                returnA -< [ bulletWire p ]
          in tryShoot <|> pure []
+
+--------------------------------------------------------------------------------
+bullet :: (Monad m, Monoid e) => V2 Double -> V2 Double -> Wire e m a Bullet
+bullet initialPosition bulletVelocity = for 1.5 . aBullet
+  where
+    aBullet = Bullet <$> wrapped . integrateVector initialPosition .
+                         pure bulletVelocity
 
 --------------------------------------------------------------------------------
 playChunk :: SDL.Channel -> SDL.Chunk -> Wire e IO a a
@@ -384,6 +426,7 @@ integrateVector
   => f Double -> Wire e m (f Double) (f Double)
 integrateVector = accumT step where step dt a b = a + dt *^ b
 
+--------------------------------------------------------------------------------
 integrateVectorUpTo
   :: (Functor f, Num (f Time), Metric f)
   => f Double -> Double -> Wire e m (f Double) (f Double)
@@ -416,12 +459,11 @@ asteroid generation size initialPosition velocity = proc _ -> do
     spikes <- mapM mkSpike [0..6]
     return (Right spikes, pure spikes)
 
-
 --------------------------------------------------------------------------------
 wrapped :: Wire e m (V2 Double) (V2 Double)
 wrapped = mkFix $ \_ (V2 x y) ->
-  let x' = until (>= 0) (+ 640) $ until (<= 640) (subtract 640) x
-      y' = until (>= 0) (+ 480) $ until (<= 480) (subtract 480) y
+  let x' = until (>= 0) (+ 800) $ until (<= 800) (subtract 800) x
+      y' = until (>= 0) (+ 600) $ until (<= 600) (subtract 600) y
   in Right (V2 x' y')
 
 --------------------------------------------------------------------------------
@@ -439,3 +481,30 @@ stepWires :: Monad m => Wire e m [Wire e m () b] [(b, Wire e m () b)]
 stepWires = mkFixM $ \dt objects -> do
   stepped <- mapM (\o -> stepWire o dt ()) objects
   return $ Right [ (o, w') | (Right o, w') <- stepped ]
+
+--------------------------------------------------------------------------------
+largeUfo
+  :: (Monad m, MonadRandom m, Monoid e)
+  => Wire e m a (UFO, [Wire e m a Bullet])
+largeUfo = proc _ -> do
+  position <- require onScreen . pos -< ()
+  shotsFired <- shoot <|> pure [] -< position
+
+  returnA -< (UFO position Small, shotsFired)
+
+ where
+
+  shoot = proc pos -> do
+    periodically 1 -< ()
+    velocity <- (!* (V2 0 300)) . rotationMatrix <$> noiseRM . pure (0, 2 * pi) -< ()
+    returnA -< [bullet pos velocity]
+
+  pos = let x = integrateVector (V2 0 0) . pure (V2 80 0)
+            y = (V2 0) . (+ 100) . (5 *) . sin . (* 10) <$> time
+        in (+) <$> x <*> y
+
+  onScreen (V2 x y) = x >= 0 && x < 800
+
+  randomConstant range = mkGen $ \_ _ -> do
+    x <- getRandomR range
+    return (Right x, pure x)
