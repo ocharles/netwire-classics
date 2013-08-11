@@ -261,8 +261,8 @@ asteroidsRound nAsteroids c d e initialScore = proc keysDown -> do
   points <- countFrom initialScore -< sumOf (folded._1.to score) removedAsteroids
 
   -- Sound effects
-  (once . playChunk 0 c . edge (not . null) <|> id)  -< asteroidExplosions
-  (once . playChunk 1 d . edge (not . null) <|> id)  -< newBulletWires
+  playForList c 0 -< asteroidExplosions
+  playForList d 1 -< newBulletWires
 
   -- End game semantics
   first (unless (== 0)) --> for 2 --> second clearLevel -<
@@ -277,6 +277,8 @@ asteroidsRound nAsteroids c d e initialScore = proc keysDown -> do
                    }
 
  where
+
+  playForList c channel = once . playChunk channel c . edge (not . null) <|> id
 
   clearLevel = mkFix $ \_ points -> Left $ LevelOver Cleared points
 
