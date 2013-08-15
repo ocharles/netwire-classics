@@ -40,8 +40,10 @@ intersecting p@(Point _) c@(Circle _ _) = intersecting c p
 intersecting (Point _) (Point _)        = False
 
 colliding :: (Physical a, Physical b) => [a] -> b -> Bool
-colliding others this =
-  any (intersecting (bounds this)) . map bounds $ others
+colliding others this = intersectingAny (map bounds others) (bounds this)
+
+intersectingAny :: [Bounds] -> Bounds -> Bool
+intersectingAny others this = any (intersecting this) others
 
 --------------------------------------------------------------------------------
 data Asteroid = Asteroid { astPos :: V2 Double
@@ -238,26 +240,36 @@ asteroidsRound
 asteroidsRound nAsteroids c d e initialScore = proc keysDown -> do
   -- Ship, asteroids, bullets
   rec
+    -- Step all remaining bullets, ufos and asteroids
     bulletAutos <- stepWires . delay [] -< activeBullets
     ufoAutos <- stepWires . delay [] -< activeUfos
     asteroidAutos <- stepWires . initialAsteroids -< activeAsteroids
 
-    (remainingBullets, remainingAsteroids, removedAsteroids) <-
-      collide -< (bulletAutos, asteroidAutos)
+    -- Smash it all together!
+    (remainingBullets, remainingAsteroids, remainingUfos, removedAsteroids, removedUfos) <-
+      collide -< (bulletAutos, asteroidAutos, ufoAutos)
 
+    -- Split asteroids that have collided with anything
     newAsteroids <- splitAsteroids -< map fst removedAsteroids
 
-    (p, newBulletWires) <- player e -< (keysDown, map fst remainingAsteroids)
+    -- Move the player
+    (p, newBulletWires) <- player e -<
+      (keysDown, map (bounds . fst) remainingAsteroids ++
+                 map (bounds . fst . fst) remainingUfos)
+
+    -- Randomly spawn a UFO
     newUfoWires <- pure [ largeUfo ] . ufoSpawned <|> pure [] -< ()
 
+    -- Finally bind the remaining/new entities to be used in the next frame
     activeBullets <- returnA -< newBulletWires ++ map snd remainingBullets
                                  ++ concatMap (snd . fst) ufoAutos
     activeAsteroids <- returnA -< newAsteroids ++ map snd remainingAsteroids
-    activeUfos <- returnA -< newUfoWires ++ map snd ufoAutos
+    activeUfos <- returnA -< newUfoWires ++ map snd remainingUfos
 
   -- Points/explosions
   let asteroidExplosions = removedAsteroids ^.. folded . _1 . position
-  particles <- particleSystems -< asteroidExplosions
+  let ufoExplosions = removedUfos ^.. folded . _1 . _1 . position
+  particles <- particleSystems -< asteroidExplosions ++ ufoExplosions
   points <- countFrom initialScore -< sumOf (folded._1.to score) removedAsteroids
 
   -- Sound effects
@@ -296,12 +308,6 @@ asteroidsRound nAsteroids c d e initialScore = proc keysDown -> do
         <*> randomVelocity (10, 20)
     stepWire (delay wires) dt a
 
-  collide = mkFix $ \_ (bullets, asteroids) ->
-    let activeBullets = filter (not . colliding (map fst asteroids) . fst) bullets
-        activeAsteroids = filter (not . colliding (map fst bullets) . fst) asteroids
-        destroyedAsteroids = filter (colliding (map fst bullets) . fst) asteroids
-    in Right (activeBullets, activeAsteroids, destroyedAsteroids)
-
   splitAsteroids = mkFixM $ \_ asteroids ->
     (Right . concat) <$> mapM splitAsteroid asteroids
 
@@ -315,6 +321,16 @@ asteroidsRound nAsteroids c d e initialScore = proc keysDown -> do
     | otherwise         = return []
 
   ufoSpawned = once --  . wackelkontaktM (1 / 500) . after 60
+
+collide = mkFix $ \_ (bullets, asteroids, ufos) ->
+  let activeBullets = filter (not . ((||) <$> colliding (map fst asteroids) <*> colliding (map (fst . fst) ufos)) . fst) bullets
+      activeAsteroids = filter (not . colliding (map fst bullets) . fst) asteroids
+      destroyedAsteroids = filter (colliding (map fst bullets) . fst) asteroids
+      activeUfos =
+        filter ( not . ((||) <$> colliding (map fst asteroids) <*> colliding (map fst bullets)) . fst . fst) ufos
+      destroyedUfos =
+        filter ( ((||) <$> colliding (map fst asteroids) <*> colliding (map fst bullets)) . fst . fst) ufos
+  in Right (activeBullets, activeAsteroids, activeUfos, destroyedAsteroids, destroyedUfos)
 
 --------------------------------------------------------------------------------
 randomVelocity
@@ -349,7 +365,7 @@ player
   :: (Monoid e, Monad m)
   => SDL.Chunk
   -> Wire LevelOver IO
-       (Set.Set SDL.Keysym, [Asteroid])
+       (Set.Set SDL.Keysym, [Bounds])
        (Either [V2 Double] Ship, [Wire e m () Bullet])
 player deathSound = proc (keysDown, activeAsteroids) -> do
   ship <- fly -< keysDown
@@ -368,7 +384,7 @@ player deathSound = proc (keysDown, activeAsteroids) -> do
     returnA -< Ship pos rotation
 
   notColliding = mkFix $ \_ a@(ship, asteroids) ->
-    if colliding asteroids ship
+    if intersectingAny asteroids (bounds ship)
         then Left mempty
         else Right a
 
@@ -486,7 +502,7 @@ largeUfo = proc _ -> do
   shoot = proc pos -> do
     periodically 1 -< ()
     velocity <- (!* (V2 0 300)) . rotationMatrix <$> noiseRM . pure (0, 2 * pi) -< ()
-    returnA -< [bullet pos velocity]
+    returnA -< [bullet (pos + (normalize velocity ^* 30)) velocity]
 
   pos = let x = integrateVector (V2 0 0) . pure (V2 80 0)
             y = (V2 0) . (+ 100) . (5 *) . sin . (* 10) <$> time
