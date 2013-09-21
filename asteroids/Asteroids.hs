@@ -15,6 +15,7 @@ import Control.Lens hiding (at, perform, wrapped)
 import Control.Wire hiding (until)
 import Data.Foldable
 import Data.Monoid
+import Paths_asteroids (getDataFileName)
 import Linear hiding ((*!))
 import qualified Data.Set as Set
 import qualified Graphics.UI.SDL as SDL
@@ -168,8 +169,8 @@ main = SDL.withInit [SDL.InitEverything] $ do
   screen <- SDL.setVideoMode 800 600 0 [SDL.SWSurface]--, SDL.Fullscreen]
 
   SDLTTF.init
-  ka1 <- SDLTTF.openFont "ka1.ttf" 10
-
+  ttfFilePath <- getDataFileName "fonts/beams-font/Beams.ttf"
+  ka1 <- SDLTTF.openFont ttfFilePath 10
   frameRate <- Framerate.new
   Framerate.init frameRate
   Framerate.set frameRate 120

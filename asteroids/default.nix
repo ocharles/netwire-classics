@@ -50,10 +50,41 @@ let
   };
 });
 
+
+beams = stdenv.mkDerivation {
+  name = "beams-font";
+  src = fetchurl {
+    url = http://openfontlibrary.org/assets/downloads/beams/e9dbb80c1c925d7676b2032afef1c01b/beams.zip;
+    sha256 = "697e38f7d6e3542572d747b1796b0ebf0702e86f75b258f602230a310736e09e";
+  };
+  
+  meta = {
+    description = "The beams font from openfontlibrary";
+  };
+  
+  buildInputs = [ unzip ]; 
+  
+  buildCommand = ''
+    mkdir -p $out
+    cd $out
+    unzip $src
+  '';
+};
+ 
+
 in cabal.mkDerivation (self: {
   pname = "netwire-classics";
   version = "0.1.0.0";
   src = ./.;
-  buildDepends = [ cabalInstall netwire SDL SDLMixer lens linear SDLgfx SDLttf
-  async ];
+  buildDepends = [ cabalInstall netwire SDL SDLMixer lens linear SDLgfx SDLttf async makeWrapper unzip beams ];
+  
+  isLibrary = false;
+  isExecutable = true;
+  
+  postInstall = ''
+    ensureDir "$out/share/asteroids-$version/fonts/"
+    ln -s ${beams} $out/share/asteroids-$version/fonts/${beams.name}
+    wrapProgram $out/bin/asteroids --prefix LD_LIBRARY_PATH : ${self.stdenv.gcc.gcc}/lib
+  ''; 
+  
 })
