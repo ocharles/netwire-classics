@@ -6,7 +6,7 @@ Classic games recreated in netwire
 ###Download and Install Nix, Alternatively install NixOS
 http://nixos.org/nix/download.html
 
-* Install nix
+#####Install nix
 ```bash
 #subscribe to nixpkgs-unstable channel
 nix-channel --add http://nixos.org/channels/nixpkgs-unstable
