@@ -1,10 +1,11 @@
 {-# LANGUAGE Arrows #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE MonadComprehensions #-}
 import Prelude hiding ((.), id, until)
 
 import Control.Lens
-import Control.Monad (guard, liftM, msum)
+import Control.Monad (liftM, msum)
 import Control.Monad.Fix (MonadFix)
 import Control.Monad.IO.Class (MonadIO(..))
 import Control.Monad.Loops (unfoldM)
@@ -77,7 +78,8 @@ correctPosition = do
     currentPosition <- get
 
     let d p = quadrance (currentPosition .-. (fromIntegral <$> p * 32))
-        adjacencies = take 8 $ sortBy (comparing d) $ filter (world !) $
+        adjacencies = take 3 $ sortBy (comparing d) $
+          filter ((&&) <$> (world !) <*> ((< (32^2 * 2)) . d)) $
             Array.indices world
 
     msum $ map ?? adjacencies $ \coords -> do
@@ -89,8 +91,7 @@ correctPosition = do
           correct axis =
             let onAxis = gap * axis
                 direction = if dot delta axis < 0 then -1 else 1
-            in do guard (dot onAxis axis < 0)
-                  return (onAxis * direction)
+            in [ onAxis * direction | dot onAxis axis < 0 ]
 
       correction <- liftM (minimumBy (comparing quadrance))
                           (sequence [ correct (V2 1 0), correct (V2 0 1) ])
@@ -118,13 +119,10 @@ mario = proc (m, world) -> do
 
     let velocityCorrections =
           V2 (return (marioXVelocity m))
-             (asum [ do guard (onFloor collisions)
-                        guard (Unsafe.occurred (marioJumping m))
-                        return (negate jumpSpeed)
-                   , do guard (hitHead collisions)
-                        return 0
-                   , do guard (onFloor collisions)
-                        return (gravity ^. _y)
+             (asum [ [ negate jumpSpeed | onFloor collisions
+                                        , Unsafe.occurred (marioJumping m) ]
+                   , [ 0 | hitHead collisions ]
+                   , [ gravity ^. _y | onFloor collisions ]
                    ])
 
     velocity <-
