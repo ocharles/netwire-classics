@@ -77,15 +77,16 @@ correctPosition = do
   collisions <- unfoldM $ runMaybeT $ do
     currentPosition <- get
 
-    let d p = quadrance (currentPosition .-. (fromIntegral <$> p * 32))
-        adjacencies = take 3 $ sortBy (comparing d) $
-          filter ((&&) <$> (world !) <*> ((< (32^2 * 2)) . d)) $
-            Array.indices world
+    let d = qd currentPosition
+        adjacencies = take 3 $
+          sortBy (comparing d) $
+            filter ((< (32^2 * 2)) . d) $
+              map ((* 32) . fmap fromIntegral) $
+                filter (world !) $
+                  Array.indices world
 
-    msum $ map ?? adjacencies $ \coords -> do
-      let tileCenter = (fromIntegral <$> coords) * 32
-          delta = currentPosition .-. tileCenter
-
+    msum $ map ?? adjacencies $ \tileCenter -> do
+      let delta = currentPosition .-. tileCenter
           gap = fmap abs delta - (2 * tileSize)
 
           correct axis =
@@ -94,12 +95,12 @@ correctPosition = do
             in [ onAxis * direction | dot onAxis axis < 0 ]
 
       correction <- liftM (minimumBy (comparing quadrance))
-                          (sequence [ correct (V2 1 0), correct (V2 0 1) ])
+                          (mapM correct basis)
 
       _xy -= correction
       return correction
 
-  gets (\relocated -> (relocated, Foldable.foldl' (+) 0 collisions))
+  gets $ \relocated -> (relocated, Foldable.foldl' (+) 0 collisions)
 
 --------------------------------------------------------------------------------
 hitHead, onFloor :: (Num a, Ord a) => V2 a -> Bool
