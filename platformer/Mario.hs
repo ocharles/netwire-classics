@@ -5,15 +5,15 @@
 import Prelude hiding ((.), id, until)
 
 import Control.Lens
-import Control.Monad (liftM, msum)
+import Control.Monad (liftM, msum, void)
 import Control.Monad.Fix (MonadFix)
 import Control.Monad.IO.Class (MonadIO(..))
 import Control.Monad.Loops (unfoldM)
 import Control.Monad.Reader.Class (MonadReader, ask)
 import Control.Monad.State.Class (MonadState, get, gets, modify)
 import Control.Monad.Trans.Maybe (runMaybeT)
-import Control.Monad.Trans.Reader (runReaderT)
-import Control.Monad.Trans.State (evalStateT)
+import Control.Monad.Trans.Reader (runReaderT, ReaderT, withReaderT)
+import Control.Monad.Trans.State (evalStateT, StateT)
 import Control.Wire
 import Data.Array (Array, (!))
 import Data.Foldable (Foldable, asum, minimumBy)
@@ -27,6 +27,7 @@ import Linear.Affine
 
 import qualified Codec.Picture as JP
 import qualified Codec.Picture.Types as JP
+import qualified Control.Lens as Lens
 import qualified Control.Monad as Monad
 import qualified Control.Wire.Unsafe.Event as Unsafe
 import qualified Data.Array as Array
@@ -111,11 +112,11 @@ onFloor collisions = dot collisions (V2 0 1) > 0.5
 mario
   :: ( Fractional t, HasTime t s, Monoid e, Monad m, MonadFix m
      , MonadState cache m, At cache, IxValue cache ~ SDL.Texture
+     , MonadReader SDL.Renderer m, MonadIO m
      , Index cache ~ FilePath)
   => Wire s e m (MarioInput, Array (Point V2 Int) Bool) SceneElement
 mario = proc (m, world) -> do
   rec
-    -- Collisions that had to be corrected in the previous instant
     collisions <- delay 0 -< collisions'
 
     let velocityCorrections =
@@ -132,20 +133,67 @@ mario = proc (m, world) -> do
     (position, collisions') <-
       integralWith correctPosition (P (V2 0 0)) -< (P velocity, world)
 
-  rec bearing <- case signum (marioXVelocity m) of
-                   0 -> delay (V2 1 0)     -< bearing
-                   b -> arr (\b -> V2 b 0) -< b
+  rec
+    lastFlip <- delay [] -< flip
+    let flip = case signum (marioXVelocity m) of
+                 0 -> lastFlip
+                 1 -> []
+                 -1 -> [SDL.Horizontal]
 
-  returnA -< \r -> do
-    SDL.setRenderDrawColor r 0 0 0 255
-    let (x, y) = ( round (position ^. _x - 16)
-                 , round (position ^. _y - 16)
-                 )
-        (x', y') = ( round (position ^. _x + bearing ^. _x * 32)
-                   , round $ position ^. _y - 16)
-    SDL.renderDrawRect r (SDL.Rect x y 32 32)
-    SDL.renderDrawLine r (fromIntegral x + 16) (fromIntegral y + 16)
-                         (x' + 16) (y' + 16)
+  yVelocity <- derivative <|> 0 -< position ^. _y
+
+  frame <-
+    if abs yVelocity > 0
+      then pure (SDL.Rect 68 26 17 26) -< ()
+      else
+        if abs (velocity ^. _x) > 0
+          then cycleFrames runFrames -< ()
+          else pure idleFrame -<()
+
+  tile "mario.bmp" -< (position, frame, flip)
+
+ where
+
+    runFrames = cycle [ SDL.Rect 115 26 16 28, SDL.Rect 139 26 17 26 ]
+
+    idleFrame = SDL.Rect 10 26 15 27
+
+    cycleFrames (a:as) = pure a . for (1 / 10) --> cycleFrames as
+
+--------------------------------------------------------------------------------
+tile
+  :: (Monoid s, MonadIO m, MonadState cache m, At cache, IxValue cache ~ SDL.Texture, Index cache ~ FilePath, MonadReader SDL.Renderer m)
+  => FilePath -> Wire s e m (Point V2 Double, SDL.Rect, [SDL.Flip]) SceneElement
+tile fileName = mkGen $ \d a -> do
+  renderer <- ask
+
+  texture <- cacheLookup (Lens.at fileName) $ liftIO $ do
+    surface <- SDL.loadBMP fileName
+    surfaceFormat <- SDL.surfaceFormat surface
+    key <- SDL.mapRGBA surfaceFormat 255 255 255 255
+    SDL.setColorKey surface True key
+    SDL.createTextureFromSurface renderer surface
+
+  let move =
+        mkPureN $ \(P pos, bounds, flipSprite) ->
+          let draw r = void $ do
+                liftIO $ SDL.renderCopyEx
+                  renderer texture
+                  (Just bounds)
+                  (Just $ SDL.Rect 0 0 (SDL.rectW bounds) (SDL.rectH bounds)
+                        & rectLoc +~ fmap round pos
+                        & rectLoc -~ (V2 16 16))
+                  0 Nothing
+                  flipSprite
+
+          in (Right draw, move)
+  stepWire move d (Right a)
+
+ where
+
+  cacheLookup cacheKey action =
+    use (cloneIndexedLens cacheKey) >>=
+      maybe ((cloneIndexedLens cacheKey <?=) =<< action) return
 
 --------------------------------------------------------------------------------
 main :: IO ()
@@ -161,9 +209,10 @@ main =
                   (Array.range worldBounds)
 
   getCurrentTime >>=
-    flip evalStateT Map.empty .
+    flip evalStateT (Map.empty) .
+    flip runReaderT renderer .
       reactimate (return $ const $ return ())
-                 renderer world
+                 world
                  (game world)
                  (countSession_ timestep) 0
 
@@ -171,15 +220,23 @@ main =
 
   timestep = 1 / 200
 
+  game
+    :: Array (Point V2 Int) Bool
+    -> Wire
+         (Timed NominalDiffTime ())
+         ()
+         (ReaderT ([SDL.Event], SDL.Renderer) (StateT (Map.Map FilePath SDL.Texture) IO))
+         a SceneElement
   game w = proc _ -> do
-    input <- MarioInput
-               <$> keyDown Scancode.Space
-               <*> asum [ 75 . whileKeyHeld Scancode.Right
-                        , -75 . whileKeyHeld Scancode.Left
-                        , 0 ] -< ()
-    mario -< (input, w)
+    input <- mapWire (withReaderT (view _1))
+               (MarioInput
+                  <$> keyDown Scancode.Space
+                  <*> asum [ 75 . whileKeyHeld Scancode.Right
+                           , -75 . whileKeyHeld Scancode.Left
+                           , 0 ]) -< ()
+    mapWire (withReaderT (view _2)) mario -< (input, w)
 
-  reactimate r' renderer world w' s' leftOver' previousTime = do
+  reactimate r' world w' s' leftOver' previousTime = do
     currentTime <- liftIO getCurrentTime
     let delta = leftOver' + currentTime `diffUTCTime` previousTime
         steps = floor (delta / timestep) :: Int
@@ -190,6 +247,7 @@ main =
     case r of
       Left () -> return ()
       Right a -> do
+        renderer <- ask
         liftIO $ do
           SDL.setRenderDrawColor renderer 255 255 255 255
           SDL.renderClear renderer
@@ -197,7 +255,7 @@ main =
           a renderer
           SDL.renderPresent renderer
 
-        reactimate r renderer world w s leftOver currentTime
+        reactimate r world w s leftOver currentTime
 
   stepNTimes r' w' s' steps =
     if steps <= 0
@@ -205,7 +263,7 @@ main =
         else do
           events <- liftIO (unfoldM SDL.pollEvent)
           (ds, s) <- liftIO (stepSession s')
-          (r, w) <- runReaderT (stepWire w' ds (Right ())) events
+          (r, w) <-  withReaderT (\r -> (events, r)) (stepWire w' ds (Right ()))
           stepNTimes r w s (steps - 1)
 
   renderLevel world renderer = mapM_ ?? Array.assocs world $
@@ -263,3 +321,8 @@ hasEvent
   => [SDL.EventData -> Bool] -> m Bool
 hasEvent conditions =
   has (folded . eventData . filtered (and <$> sequence conditions)) <$> ask
+
+--------------------------------------------------------------------------------
+rectLoc :: Functor f => (V2 Int -> f (V2 Int)) -> SDL.Rect -> f SDL.Rect
+rectLoc f (SDL.Rect x y w h) =
+  f (V2 x y) <&> \(V2 x' y') -> SDL.Rect x' y' w h
