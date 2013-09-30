@@ -103,9 +103,9 @@ correctPosition = do
   gets $ \relocated -> (relocated, Foldable.foldl' (+) 0 collisions)
 
 --------------------------------------------------------------------------------
-hitHead, onFloor :: (Num a, Ord a) => V2 a -> Bool
+hitHead, onFloor :: (Num a, Ord a, Fractional a) => V2 a -> Bool
 hitHead collisions = dot collisions (V2 0 1) < 0
-onFloor collisions = dot collisions (V2 0 1) > 0
+onFloor collisions = dot collisions (V2 0 1) > 0.5
 
 --------------------------------------------------------------------------------
 mario
