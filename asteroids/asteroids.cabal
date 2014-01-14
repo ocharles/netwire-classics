@@ -22,7 +22,7 @@ executable asteroids
                        bytestring,
                        lens,
                        linear,
-                       netwire,
+                       netwire <5.0,
                        SDL,
                        SDL-ttf,
                        SDL-mixer,
