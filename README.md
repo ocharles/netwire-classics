@@ -6,6 +6,7 @@ Classic games recreated in netwire
 ### Download and Install Nix
 
 https://www.domenkozar.com/2014/01/02/getting-started-with-nix-package-manager/
+
 https://gist.github.com/iElectric/8217950 - Nix install script
 
 ### Alternatively install NixOS
